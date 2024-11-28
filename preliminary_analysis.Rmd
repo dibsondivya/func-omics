@@ -1,0 +1,176 @@
+---
+title: "Analysis of RNA-seq in Alzheimer's Disease Patients"
+author: "Group 2"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# Set global options
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r load-libraries}
+library(dplyr)
+library(DESeq2)
+library(edgeR)
+library(limma)
+library(pheatmap)
+library(ggplot2)
+library(ggrepel)
+library(RColorBrewer)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+```
+
+```{r load data}
+# Load gene expression count data
+count_data <- read.table("repo/func-omics/data/GSE53697_RNAseq_AD.txt", header = TRUE, sep = "\t", row.names = 1) %>%
+  dplyr::select(matches("_raw$"))
+```
+
+```{r preprocess data}
+# Round counts to integers
+count_data_filtered <- count_data %>% 
+  dplyr::select(starts_with("C"), starts_with("A")) %>%
+  mutate_all(~round(.))
+```
+
+```{r filter low counts using mean log2 CPM}
+count_data_filtered <- count_data
+genes_before_filtering <- nrow(count_data_filtered)
+cat("Number of genes before filtering:", genes_before_filtering, "\n")
+dge <- DGEList(counts = count_data_filtered)
+dge <- calcNormFactors(dge)
+meanLog2CPM <- rowMeans(log2(cpm(dge) + 1))
+hist(meanLog2CPM, main = "Histogram of Mean Log2 CPM", xlab = "Mean Log2 CPM")
+count_data_filtered <- count_data_filtered[meanLog2CPM > 1, ]
+genes_after_filtering <- nrow(count_data_filtered)
+cat("Number of genes after filtering:", genes_after_filtering, "\n")
+sample_conditions <- data.frame(
+  sample = colnames(count_data_filtered),
+  condition = ifelse(grepl("^C", colnames(count_data_filtered)), "HC", "AD"),
+  batch = c(0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1)  # Manually adding batch information
+)
+```
+
+```{r normalization with Voom}
+dge <- DGEList(counts = count_data_filtered)
+dge <- calcNormFactors(dge)
+# design <- model.matrix(~ condition + batch, data = sample_conditions)
+design <- model.matrix(~ condition + factor(batch), data = sample_conditions)
+v <- voom(dge, design, plot = TRUE)
+head(v$E)
+hist(v$E, breaks = 50, main = "Distribution of Voom Normalized Counts", xlab = "Voom Normalized Counts")
+```
+```{r normalization with DESeq2}
+# dds <- DESeqDataSetFromMatrix(countData = count_data_filtered, 
+#                               colData = sample_conditions, 
+#                               design = ~ condition + factor(batch))
+# Normalize counts using variance stabilizing transformation (vst)
+# normCounts <- vst(dds, blind = TRUE)
+# assay(normCounts)[1:5, 1:5]
+# hist(assay(normCounts), breaks = 50, main = "Distribution of VST Normalized Counts", xlab = "Normalized Counts")
+```
+
+```{r QC: sample heatmap}
+# sampleDist <- cor(assay(normCounts), method = "spearman")
+sampleDist <- cor(v$E, method = "spearman")
+sampleColor <- brewer.pal(3, "Accent")[1:2]
+names(sampleColor) <- unique(sample_conditions$condition)
+
+pheatmap(sampleDist,
+  clustering_distance_rows = as.dist(1 - sampleDist),
+  clustering_distance_cols = as.dist(1 - sampleDist),
+  annotation_col = data.frame(Storage = sample_conditions$condition, row.names = sample_conditions$sample),
+  annotation_colors = list(Storage = sampleColor),
+  main = "Sample Correlation Heatmap")
+```
+```{r QC: sample PCA}
+# pcaRes <- prcomp(t(assay(normCounts)))
+pcaRes <- prcomp(t(v$E))
+varExp <- round(pcaRes$sdev^2 / sum(pcaRes$sdev^2) * 100)
+pcaDF <- data.frame(
+  PC1 = pcaRes$x[, 1],
+  PC2 = pcaRes$x[, 2],
+  Condition = sample_conditions$condition,
+  Sample = sample_conditions$sample
+)
+pcaPlot <- ggplot(
+  data = pcaDF,
+  mapping = aes(x = PC1, y = PC2, color = Condition, label = Sample)
+) +
+  geom_point(size = 3) +
+  geom_text_repel(size = 4) +
+  labs(x = paste0("PC1 (", varExp[1], " %)") ,
+       y = paste0("PC2 (", varExp[2], " %)") ,
+       title = "PCA Plot of Samples") +
+  theme_minimal() +
+  theme(axis.text = element_text(size = 12), legend.text = element_text(size = 10)) +
+  scale_color_manual(values = brewer.pal(3, "Accent")) +
+  coord_fixed(ratio = 1)  # Added fixed ratio to ensure equal scaling between PC1 and PC2
+print(pcaPlot)
+```
+
+```{r QC: outlier removal}
+# Remove identified outliers
+# outliers <- c("C1_raw", "C2_raw", "C4_raw", "C5_raw", "C6_raw")
+outliers <- c("C1_raw", "C5_raw", "C6_raw")
+remaining_samples <- setdiff(colnames(count_data_filtered), outliers)
+count_data_filtered <- count_data_filtered[, remaining_samples]
+sample_conditions <- sample_conditions[!sample_conditions$sample %in% outliers, ]
+```
+
+```{r statistical analyses}
+# Define design matrix including batch effect
+# designMatrix <- model.matrix(~ 0 + condition + batch, data = sample_conditions)
+designMatrix <- model.matrix(~ 0 + condition + factor(batch), data = sample_conditions)
+
+colnames(designMatrix) <- make.names(colnames(designMatrix))  # Ensure valid column names for contrast matrix
+cat("Design Matrix with Batch Effect:\n")
+print(head(designMatrix))
+
+# Define contrast matrix
+contrastMatrix <- makeContrasts(AD_vs_HC = conditionAD - conditionHC, levels = designMatrix)
+cat("Contrast Matrix:\n")
+print(contrastMatrix)
+
+# Prepare DGEList and estimate dispersion
+dge <- DGEList(count_data_filtered)
+dge <- calcNormFactors(dge)
+dge <- estimateDisp(dge, designMatrix, robust = TRUE)
+
+# Fit the model using likelihood ratio test (LRT), now including batch in the design
+fit <- glmFit(dge, designMatrix)
+lrt <- glmLRT(fit, contrast = contrastMatrix)
+```
+
+```{r hypothesis testing}
+res <- topTags(lrt, n = nrow(count_data_filtered))
+res$table$FDR <- p.adjust(res$table$PValue, method = "BH")
+cat("Summary of p-values:\n")
+print(summary(res$table$PValue))
+cat("Summary of FDRs:\n")
+print(summary(res$table$FDR))
+sigRes <- subset(res$table, FDR < 0.05 & abs(logFC) > 1)
+cat("Number of significant genes:", nrow(sigRes), "\n")
+knitr::kable(head(sigRes))
+```
+
+```{r visualize results}
+volcanoPlot <- ggplot(res$table, aes(x = logFC, y = -log10(FDR),
+                                     color = ifelse(FDR < 0.05 & abs(logFC) > 1, "darkred", "grey"))) +
+  geom_point(alpha = 0.5, size = 2) +
+  xlab(expression("Fold Change, Log"[2]*"")) +
+  ylab(expression("Adjusted P value, Log"[10]*"")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dotted", linewidth = 1) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dotted", linewidth = 1) +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  scale_colour_manual(values = c("darkred", "grey")) +
+  geom_text_repel(aes(label = ifelse(FDR < 0.05 & abs(logFC) > 1, rownames(res$table), "")),
+                  size = 3, max.overlaps = 10)
+
+print(volcanoPlot)
+```
