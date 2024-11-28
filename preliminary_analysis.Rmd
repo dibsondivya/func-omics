@@ -42,7 +42,7 @@ count_data_filtered <- count_data
 genes_before_filtering <- nrow(count_data_filtered)
 cat("Number of genes before filtering:", genes_before_filtering, "\n")
 dge <- DGEList(counts = count_data_filtered)
-dge <- calcNormFactors(dge)
+# dge <- calcNormFactors(dge)
 meanLog2CPM <- rowMeans(log2(cpm(dge) + 1))
 hist(meanLog2CPM, main = "Histogram of Mean Log2 CPM", xlab = "Mean Log2 CPM")
 count_data_filtered <- count_data_filtered[meanLog2CPM > 1, ]
