@@ -43,7 +43,7 @@ libs <- c(
   "patchwork", "DT", "tidymodels", "ggbeeswarm", "gt", "skimr", "GGally",
   "visdat", "corrr", "ggsignif", "vip", "themis", "keras", "xgboost", "kknn",
   "tensorflow", "xlsx", "HDAnalyzeR", "plotly", "umap", "uwot", "ggplotify",
-  "cowplot", "ggvenn", "UpSetR", "ComplexUpset"
+  "cowplot", "ggvenn", "UpSetR", "ComplexUpset", "DESeq2", "pheatmap", "randomForest"
 )
 
 # Install missing libraries
@@ -59,8 +59,25 @@ invisible(lapply(libs, library, character.only = TRUE))
 # Data
 
 ```{r}
-data <- read_tsv("data/voom_normalized.tsv")
-metadata <- 
+# Prepare data
+data_raw <- read_tsv("data/voom_normalized.tsv")
+
+data <- data_raw |>
+  dplyr::select(-GeneID)
+
+# Prepare metadata
+metadata_raw <- read_xlsx("data/ad_metadata.xlsx")
+
+metadata <- metadata_raw %>%
+  # add index column
+  mutate(Index = row_number()) %>%
+  # make index rownames
+  column_to_rownames(var = "Index") |>
+  # Rename ID to sample
+  rename(sample = ID, disease = Disease) |>
+  # Make kolumn indivudial which is the same as sample but without _raw
+  mutate(individual = sample) |>
+  dplyr::select(sample, individual, disease)
 ```
 
 # Random forest classification
@@ -68,19 +85,54 @@ metadata <-
 ## Prepare data
 
 ```{r}
-#Continuing after Day 2 slide 20
-dds <- DESeqDataSetFromMatrix(as.matrix(countTable),
-design = ~ 0 + disease + individual,
-colData = sampleTable)
+# Prepare data
+dds <- DESeqDataSetFromMatrix(countData = as.matrix(data) |> column_to_rownames(var = "GeneSymbol"),
+                              design = ~ 0 + disease + individual,
+                              colData = metadata)
 normCounts <- vst(dds, blind = FALSE)
 ```
 
 ```{r}
-# Prepare data
-dds <- DESeqDataSetFromMatrix(as.matrix(data),
-design = ~ 0 + disease + individual,
-colData = sampleTable)
-normCounts <- vst(dds, blind = FALSE)
+# Load and prepare the data
+data_raw <- read_tsv("data/voom_normalized.tsv")
+data <- data_raw %>%
+  distinct(GeneSymbol, .keep_all = TRUE) %>%
+  dplyr::select(-GeneID) %>%
+  filter(!is.na(GeneSymbol)) %>%
+  column_to_rownames(var = "GeneSymbol") %>%
+  mutate_all(~ ifelse(. < 0, 0, .)) %>%
+  mutate_all(as.integer)
+
+# Prepare metadata
+metadata_raw <- read_xlsx("data/ad_metadata.xlsx")
+metadata <- metadata_raw %>%
+  mutate(Index = row_number()) %>%
+  column_to_rownames(var = "Index") %>%
+  rename(sample = ID, disease = Disease) %>%
+  mutate(individual = gsub("_raw", "", sample)) %>%
+  dplyr::select(sample, individual, disease) %>%
+  mutate(individual = factor(individual), disease = factor(disease))
+
+# Ensure the data is in a matrix form with gene symbols as rownames
+countData <- as.matrix(data)
+
+# Prepare DESeqDataSet
+dds <- DESeqDataSetFromMatrix(
+  countData = countData,
+  colData = metadata,
+  design = ~ 0 + disease
+)
+
+# Estimate size factors
+dds <- estimateSizeFactors(dds)
+
+# Estimate gene-wise dispersions
+dds <- estimateDispersionsGeneEst(dds)
+
+# Directly use the gene-wise estimates
+dispersions(dds) <- mcols(dds)$dispGeneEst
+
+normCounts <- varianceStabilizingTransformation(dds, blind = FALSE)
 ```
 
 ## Define caret functions
@@ -95,7 +147,7 @@ sd(x) / mean(x)
 }
 #New filter function
 rfSBF$filter <- function(score, x, y){
-meanLog2CPM <- rowMeans(log2(cpm(countTable) + 1))
+meanLog2CPM <- rowMeans(log2(cpm(data) + 1))
 selection <- score > quantile(score, 0.9) & meanLog2CPM > 1
 names(score) %in% names(score)[selection]
 }
@@ -106,28 +158,31 @@ names(score) %in% names(score)[selection]
 trainingSet <- data.frame(t(assay(normCounts)))
 #Train and validate decision tree (C5.0)
 dtControl <- sbfControl(
-functions = rfSBF,
-method = "loocv",
-saveDetails = TRUE,
-verbose = FALSE)
+  functions = rfSBF,
+  method = "loocv",
+  saveDetails = TRUE,
+  verbose = FALSE)
+
 dtModel <- sbf(
-trainingSet,
-sampleTable$disease,
-sbfControl = dtControl)
+  trainingSet,
+  metadata$disease,
+  sbfControl = dtControl)
+
 #Show model
 summary(dtModel$fit)
 ```
 
 ```{r}
 #Print confusion matrix from validation
-confusionMatrix(dtModel$pred$predictions$pred, sampleTable$disease)
+confusionMatrix(dtModel$pred$predictions$pred, metadata$disease)
 ```
 
+```{r}
+# Print the importance scores for each gene
+importance <- dtModel$fit$finalModel$importance
+```
 
-
-
-
-
-
-
+```{r}
+sessionInfo()
+```
 
