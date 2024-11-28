@@ -24,6 +24,7 @@ library(enrichplot)
 library(enrichplot)
 ```
 
+
 ```{r}
 library(readr)
 # import data
@@ -196,7 +197,110 @@ pheatmap(sampleDist,
 ```
 
 ```{r}
+metadata
+
+```
+
+```{r}
+all_genes <- as.data.frame(read_csv('data/all_gene_processed.csv'))
+rownames(all_genes) <- all_genes$`...1`
+all_genes <- all_genes[,2:6]
+
+voom_normalized <- read_tsv('data/voom_normalized.tsv') 
+voom_normalized
+
+gene_cluster <- read_delim('data/cluster1.txt', delim='\n', col_names = FALSE)
+gene_cluster_data <- voom_normalized[voom_normalized$GeneSymbol %in% as.vector(gene_cluster$X1),]
+genes_for_gse <- all_genes[rownames(all_genes) %in% gene_cluster_data$GeneID,]
+ 
+processed_genes_for_gse <- as.vector(genes_for_gse$logFC)  # p value vector
+names(processed_genes_for_gse) <- as.vector(rownames(genes_for_gse)) # gene ids
+processed_genes_for_gse <- processed_genes_for_gse[order(-processed_genes_for_gse)] # order ranked
+processed_genes_for_gse
 
 
+ego <- gseGO(geneList     = processed_genes_for_gse,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "BP", ## Molecular Function (MF), Biological Process (BP), and Cellular Component (CC)
+              nPerm        = 1000,
+              minGSSize    = 3,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE,
+              by = "fgsea",
+              pAdjustMethod = "none")
+
+ego
+
+goplot(ego)
+```
+
+```{r}
+all_genes <- as.data.frame(read_csv('data/all_gene_processed.csv'))
+rownames(all_genes) <- all_genes$`...1`
+all_genes <- all_genes[,2:6]
+
+voom_normalized <- read_tsv('data/voom_normalized.tsv') 
+voom_normalized
+
+gene_cluster <- read_delim('data/cluster2.txt', delim='\n', col_names = FALSE)
+gene_cluster_data <- voom_normalized[voom_normalized$GeneSymbol %in% as.vector(gene_cluster$X1),]
+genes_for_gse <- all_genes[rownames(all_genes) %in% gene_cluster_data$GeneID,]
+ 
+processed_genes_for_gse <- as.vector(genes_for_gse$logFC)  # p value vector
+names(processed_genes_for_gse) <- as.vector(rownames(genes_for_gse)) # gene ids
+processed_genes_for_gse <- processed_genes_for_gse[order(-processed_genes_for_gse)] # order ranked
+processed_genes_for_gse
+
+
+ego <- gseGO(geneList     = processed_genes_for_gse,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "BP", ## Molecular Function (MF), Biological Process (BP), and Cellular Component (CC)
+              nPerm        = 1000,
+              minGSSize    = 3,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE,
+              by = "fgsea",
+              pAdjustMethod = "none")
+
+ego
+
+goplot(ego)
+```
+
+
+```{r}
+all_genes <- as.data.frame(read_csv('data/all_gene_processed.csv'))
+rownames(all_genes) <- all_genes$`...1`
+all_genes <- all_genes[,2:6]
+
+voom_normalized <- read_tsv('data/voom_normalized.tsv') 
+voom_normalized
+
+gene_cluster <- read_delim('data/cluster5.txt', delim='\n', col_names = FALSE)
+gene_cluster_data <- voom_normalized[voom_normalized$GeneSymbol %in% as.vector(gene_cluster$X1),]
+genes_for_gse <- all_genes[rownames(all_genes) %in% gene_cluster_data$GeneID,]
+ 
+processed_genes_for_gse <- as.vector(genes_for_gse$logFC)  # p value vector
+names(processed_genes_for_gse) <- as.vector(rownames(genes_for_gse)) # gene ids
+processed_genes_for_gse <- processed_genes_for_gse[order(-processed_genes_for_gse)] # order ranked
+processed_genes_for_gse
+
+
+ego <- gseGO(geneList     = processed_genes_for_gse,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "BP", ## Molecular Function (MF), Biological Process (BP), and Cellular Component (CC)
+              nPerm        = 1000,
+              minGSSize    = 3,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE,
+              by = "fgsea",
+              pAdjustMethod = "none")
+
+ego
+
+goplot(ego)
 ```
 
