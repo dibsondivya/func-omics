@@ -36,7 +36,7 @@ significant_genes_for_gse <- significant_genes_for_gse[order(-significant_genes_
 significant_genes_for_gse
 ```
 ```{r}
-ego_all <- gseGO(geneList     = significant_genes_for_gse,
+ego_all <- gseGO(geneList   = significant_genes_for_gse,
               OrgDb        = org.Hs.eg.db,
               ont          = "ALL", ## Molecular Function (MF), Biological Process (BP), and Cellular Component (CC)
               nPerm        = 1000,
@@ -60,6 +60,8 @@ ego1 <- gseGO(geneList     = significant_genes_for_gse,
               verbose      = TRUE,
               by = "fgsea",
               pAdjustMethod = "none") 
+
+## gave 0 enriched genes
 ```
 
 
@@ -74,6 +76,10 @@ ego2 <- gseGO(geneList     = significant_genes_for_gse,
               verbose      = TRUE,
               by = "fgsea",
               pAdjustMethod = "none") 
+```
+
+```{r}
+ego2
 ```
 
 
@@ -91,7 +97,13 @@ ego3 <- gseGO(geneList     = significant_genes_for_gse,
 ```
 
 ```{r}
-ego3
+ego3$Description
+ego2$Description
+
+ego_all$Description
+
+setdiff(ego2$Description, ego_all$Description)
+setdiff(ego3$Description, ego_all$Description) # "cellular response to stress" disappears from list
 ```
 
 ```{r}
@@ -99,8 +111,13 @@ goplot(ego3)
 ```
 
 ```{r}
-dotplot(ego3, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplot(ego3, showCategory=10, split=".sign") + facet_grid(.~.sign) + labs(title = 'Gene Functions')
 ```
+
+```{r}
+emapplot(pairwise_termsim(ego3), showCategory = 10)
+```
+
 
 
 ```{r}
@@ -126,3 +143,60 @@ gseaplot(ego3, by = "all", title = ego3$Description[1], geneSetID = 1)
 ```{r}
 gseaplot(ego3, by = "all", title = ego3$Description[2], geneSetID = 2)
 ```
+
+```{r}
+count_data <- read.table("data/GSE53697_RNAseq_AD.txt", header = TRUE, sep = "\t", row.names = 1) %>%
+  dplyr::select(matches("_raw$"))
+count_data
+```
+
+```{r}
+subset_count_data <- count_data[rownames(count_data) %in% as.vector(significant_genes$GeneID),]
+subset_count_data
+```
+```{r}
+library("readxl")
+metadata <- read_excel('data/ad_metadata.xlsx')
+```
+
+```{r}
+sampleDist <- cor(subset_count_data, method = "spearman") 
+sampleDist
+
+sample_conditions <- data.frame(
+  sample = colnames(subset_count_data),
+  condition = ifelse(grepl("^C", colnames(subset_count_data)), "HC", "AD"),
+  batch = c(0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1),  ## Manually adding batch information; batch effect is a bit serious as otherwise no gene will be identified as significant
+  plaque = metadata$BM9_plaque
+)
+sample_conditions
+
+heat_colors <- list(condition = c("HC" = "#01bfc5", "AD" = "salmon"))
+
+pheatmap(sampleDist,
+         annotation_col = sample_conditions$condition,
+         annotation_color = heat_colors$condition)
+
+sampleColor <- brewer.pal(3, "Accent")[1:2]
+names(sampleColor) <- unique(sample_conditions$condition)
+
+pheatmap(mat = sampleDist,
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    annotation_col = data.frame(Plaque = sample_conditions$plaque, row.names = sample_conditions$sample))
+
+
+pheatmap(sampleDist,
+  clustering_distance_rows = as.dist(1 - sampleDist),
+  clustering_distance_cols = as.dist(1 - sampleDist),
+  annotation_col = sample_conditions[,c("condition", "plaque")],
+  annotation_colors = heat_colors,
+  #labels_col = sample_conditions$plaque,
+  main = "Sample Correlation Heatmap")
+```
+
+```{r}
+
+
+```
+
