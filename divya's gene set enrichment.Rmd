@@ -1,0 +1,128 @@
+---
+title: "Gene Set Enrichment of Significant Genes extracted from RNA-seq data in Alzheimer's Disease Patients"
+author: "Divya Shridar"
+date: "28 Nov 2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(dplyr)
+library(DESeq2)
+library(edgeR)
+library(limma)
+library(pheatmap)
+library(ggplot2)
+library(ggrepel)
+library(RColorBrewer)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(enrichplot)
+```
+
+```{r}
+library(readr)
+# import data
+significant_genes <- read_tsv('data/significant_genes.tsv') 
+
+# create input vector for gene enrichment
+significant_genes_for_gse <- as.vector(significant_genes$logFC)  # p value vector
+names(significant_genes_for_gse) <- as.vector(significant_genes$GeneID) # gene ids
+significant_genes_for_gse <- significant_genes_for_gse[order(-significant_genes_for_gse)] # order ranked
+significant_genes_for_gse
+```
+```{r}
+ego_all <- gseGO(geneList     = significant_genes_for_gse,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "ALL", ## Molecular Function (MF), Biological Process (BP), and Cellular Component (CC)
+              nPerm        = 1000,
+              minGSSize    = 10,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE,
+              by = "fgsea",
+              pAdjustMethod = "none") 
+```
+
+
+```{r}
+ego1 <- gseGO(geneList     = significant_genes_for_gse,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "MF", ## Molecular Function (MF), Biological Process (BP), and Cellular Component (CC)
+              nPerm        = 1000,
+              minGSSize    = 10,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE,
+              by = "fgsea",
+              pAdjustMethod = "none") 
+```
+
+
+```{r}
+ego2 <- gseGO(geneList     = significant_genes_for_gse,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "CC", ## Molecular Function (MF), Biological Process (BP), and Cellular Component (CC)
+              nPerm        = 1000,
+              minGSSize    = 10,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE,
+              by = "fgsea",
+              pAdjustMethod = "none") 
+```
+
+
+```{r}
+ego3 <- gseGO(geneList     = significant_genes_for_gse,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "BP", ## Molecular Function (MF), Biological Process (BP), and Cellular Component (CC)
+              nPerm        = 1000,
+              minGSSize    = 10,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE,
+              by = "fgsea",
+              pAdjustMethod = "none") # “holm”, “hochberg”, “hommel”, “bonferroni”, “BH”, “BY”, “fdr”, “none”
+```
+
+```{r}
+ego3
+```
+
+```{r}
+goplot(ego3)
+```
+
+```{r}
+dotplot(ego3, showCategory=10, split=".sign") + facet_grid(.~.sign)
+```
+
+
+```{r}
+library(egg)
+d_all <- dotplot(ego_all, showCategory=10, split=".sign") + facet_grid(.~.sign) +  theme(axis.text.y = element_text(hjust = 1, size = 7)) 
+d2 <- dotplot(ego2, showCategory=10, split=".sign") + facet_grid(.~.sign)+  theme(axis.text.y = element_text(hjust = 1, size = 7)) 
+d3 <- dotplot(ego3, showCategory=10, split=".sign") + facet_grid(.~.sign)+  theme(axis.text.y = element_text(hjust = 1, size = 7)) 
+
+ggarrange(d_all, d2, d3, 
+          labels = c("ALL", "CC", "BP"),
+          ncol = 1, nrow = 3)
+```
+
+```{r}
+ridgeplot(ego3) + labs(x = "enrichment distribution") +   theme(axis.text.y = element_text(hjust = 1, size = 7)) 
+```
+
+
+```{r}
+gseaplot(ego3, by = "all", title = ego3$Description[1], geneSetID = 1)
+```
+
+```{r}
+gseaplot(ego3, by = "all", title = ego3$Description[2], geneSetID = 2)
+```
