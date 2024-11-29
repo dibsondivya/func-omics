@@ -1,6 +1,6 @@
 ---
-title: "Alzheimer's disease"
-subtitle: "Machine learning analysis"
+title: "Group 2 report: Characterization of Alzheimer's disease"
+subtitle: "A project for the course Statistics in Bioinformatics"
 author: "Emil Johansson"
 date: last-modified
 date-format: "dddd [the] Do [of] MMMM YYYY"
@@ -43,7 +43,8 @@ libs <- c(
   "patchwork", "DT", "tidymodels", "ggbeeswarm", "gt", "skimr", "GGally",
   "visdat", "corrr", "ggsignif", "vip", "themis", "keras", "xgboost", "kknn",
   "tensorflow", "xlsx", "HDAnalyzeR", "plotly", "umap", "uwot", "ggplotify",
-  "cowplot", "ggvenn", "UpSetR", "ComplexUpset", "DESeq2", "pheatmap", "randomForest"
+  "cowplot", "ggvenn", "UpSetR", "ComplexUpset", "DESeq2", "pheatmap", "randomForest",
+  "caret", "edgeR"
 )
 
 # Install missing libraries
@@ -56,41 +57,9 @@ if (any(installed_libs == FALSE)) {
 invisible(lapply(libs, library, character.only = TRUE))
 ```
 
-# Data
-
-```{r}
-# Prepare data
-data_raw <- read_tsv("data/voom_normalized.tsv")
-
-data <- data_raw |>
-  dplyr::select(-GeneID)
-
-# Prepare metadata
-metadata_raw <- read_xlsx("data/ad_metadata.xlsx")
-
-metadata <- metadata_raw %>%
-  # add index column
-  mutate(Index = row_number()) %>%
-  # make index rownames
-  column_to_rownames(var = "Index") |>
-  # Rename ID to sample
-  rename(sample = ID, disease = Disease) |>
-  # Make kolumn indivudial which is the same as sample but without _raw
-  mutate(individual = sample) |>
-  dplyr::select(sample, individual, disease)
-```
-
 # Random forest classification
 
 ## Prepare data
-
-```{r}
-# Prepare data
-dds <- DESeqDataSetFromMatrix(countData = as.matrix(data) |> column_to_rownames(var = "GeneSymbol"),
-                              design = ~ 0 + disease + individual,
-                              colData = metadata)
-normCounts <- vst(dds, blind = FALSE)
-```
 
 ```{r}
 # Load and prepare the data
@@ -108,7 +77,7 @@ metadata_raw <- read_xlsx("data/ad_metadata.xlsx")
 metadata <- metadata_raw %>%
   mutate(Index = row_number()) %>%
   column_to_rownames(var = "Index") %>%
-  rename(sample = ID, disease = Disease) %>%
+  dplyr::rename(sample = ID, disease = Disease) %>%
   mutate(individual = gsub("_raw", "", sample)) %>%
   dplyr::select(sample, individual, disease) %>%
   mutate(individual = factor(individual), disease = factor(disease))
@@ -135,12 +104,9 @@ dispersions(dds) <- mcols(dds)$dispGeneEst
 normCounts <- varianceStabilizingTransformation(dds, blind = FALSE)
 ```
 
-## Define caret functions
-
 ```{r}
 #Define model fitting procedure
 #NB: you will also need the packages statmod and e1071 for this analysis
-library(caret)
 #New score function
 rfSBF$score <- function(x, y){
 sd(x) / mean(x)
@@ -169,20 +135,18 @@ dtModel <- sbf(
   sbfControl = dtControl)
 
 #Show model
-summary(dtModel$fit)
+#summary(dtModel$fit)
 ```
+
+## Performance evaluation
 
 ```{r}
 #Print confusion matrix from validation
 confusionMatrix(dtModel$pred$predictions$pred, metadata$disease)
 ```
 
-```{r}
-# Print the importance scores for each gene
-importance <- dtModel$fit$finalModel$importance
-```
+# Session info
 
 ```{r}
 sessionInfo()
 ```
-
