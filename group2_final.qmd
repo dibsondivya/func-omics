@@ -1,7 +1,7 @@
 ---
 title: "Group 2 report: Characterization of Alzheimer's disease"
 subtitle: "A project for the course Statistics in Bioinformatics"
-author: "Emil Johansson"
+author: "Emil Johansson, Inika Prasad, Vaishnavi Divya Shridar & Yuqi Zheng"
 date: last-modified
 date-format: "dddd [the] Do [of] MMMM YYYY"
 format:
@@ -774,10 +774,15 @@ print(combined_plot)
 
 # Final reflection (1/2 A4)
 
-Statistical challanges:
+Statistical challenges:
+I think for our project there was a few challanges that we tried to overcome. The first one was when picking a completely new dataset unfamiliar to us. Even though some of the group members had worked on RNA-seq data before, it was a challenge for me to understand all the important steps during the pre-processing and considerations when analyzing. Since my background is in plasma proteomics, I found some similarities in the dataframe and how I could analyze the data. For instance, I was not used to the idea of count data because I normally work with either normalized protein expression (NPX) or medium florecence intensity (MFI). 
+
+My largest contributions to this work was the attempt to classify Alzheimer's Disease (AD) using a leave-one-out (LOO) cross-validation (CV). In the short time limit that we had, I chose to apply a similar pipeline that was presented during the course. There was an issue with the vst() transformation funciton, which led me to perform some extra steps before I could apply the spelled out version of the function, which gave me a functional object from which I could proceed with this pipeline. In the end, the random forest classification gave an AUC of 0.41, which is worse than a random guess. There could have been several reasons behind this. On the one hand, since we may have picked the wrong data set or performed unlegitimate pre-processing, the data could have been more noisy. 
+
+The other contribution was to perform Spearman correlation analysis of the significant upregulated genes from the differential expression analysis on the AD patients and the controls. Some biological relevancies was found like the higher correlation to CDR. However, it didn't make any sense to me that the top markers would have a negative correlation with age since age is a big factor behind AD, but this could be because of the noisy data.
 
 Final reflection:
-In light of my own PhD project and what I have learnt from this course.
+In light of my own PhD project and what I have learnt from this course, I now feel more confortable applying these concept to my plasma proteomics pipelines and I now have more thoughts on how I could improve my current projects with methods such as canonical correlation analysis (CCA). My goal is to characterize the cardiovascular proteome and I think it will include some more multivariate analysis, therefore many of these concept I learnt during the course will be of great help.
 
 
 # Session info
