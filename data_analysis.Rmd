@@ -22,6 +22,8 @@ library(RColorBrewer)
 library(clusterProfiler)
 library(org.Hs.eg.db)
 library(enrichplot)
+library(STRINGdb)
+library(igraph)
 ```
 
 ```{r load data}
@@ -64,6 +66,7 @@ v <- voom(dge, design, plot = TRUE)
 head(v$E)
 hist(v$E, breaks = 50, main = "Distribution of Voom Normalized Counts", xlab = "Voom Normalized Counts")
 ```
+
 ```{r normalization with DESeq2}
 # dds <- DESeqDataSetFromMatrix(countData = count_data_filtered, 
 #                               colData = sample_conditions, 
@@ -74,7 +77,17 @@ hist(v$E, breaks = 50, main = "Distribution of Voom Normalized Counts", xlab = "
 # hist(assay(normCounts), breaks = 50, main = "Distribution of VST Normalized Counts", xlab = "Normalized Counts")
 ```
 
-```{r QC: sample heatmap}
+```{r save normalized results}
+count_data_with_symbols <- read.table("repo/func-omics/data/GSE53697_RNAseq_AD.txt", header = TRUE, sep = "\t", row.names = 1)
+gene_symbols <- count_data_with_symbols[, "GeneSymbol", drop = FALSE]
+voom_normalized <- as.data.frame(v$E)  # Convert v$E to a data frame
+voom_normalized$GeneID <- rownames(voom_normalized)  # Add GeneID as a column
+gene_info_voom <- merge(voom_normalized, gene_symbols, by.x = "GeneID", by.y = "row.names", all.x = TRUE)
+gene_info_voom <- gene_info_voom[, c("GeneID", "GeneSymbol", setdiff(names(gene_info_voom), c("GeneID", "GeneSymbol")))]
+# write.table(gene_info_voom, file = "voom_normalized.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+```
+
+```{r QC: condition heatmap}
 # sampleDist <- cor(assay(normCounts), method = "spearman")
 sampleDist <- cor(v$E, method = "spearman")
 sampleColor <- brewer.pal(3, "Accent")[1:2]
@@ -83,11 +96,11 @@ names(sampleColor) <- unique(sample_conditions$condition)
 pheatmap(sampleDist,
   clustering_distance_rows = as.dist(1 - sampleDist),
   clustering_distance_cols = as.dist(1 - sampleDist),
-  annotation_col = data.frame(Storage = sample_conditions$condition, row.names = sample_conditions$sample),
+  annotation_col = data.frame(Condition = sample_conditions$condition, row.names = sample_conditions$sample),
   annotation_colors = list(Storage = sampleColor),
-  main = "Sample Correlation Heatmap")
+  main = "Sample Correlation Heatmap by Condition")
 ```
-```{r QC: sample PCA}
+```{r QC: PCA by condition}
 # pcaRes <- prcomp(t(assay(normCounts)))
 pcaRes <- prcomp(t(v$E))
 varExp <- round(pcaRes$sdev^2 / sum(pcaRes$sdev^2) * 100)
@@ -113,6 +126,44 @@ pcaPlot <- ggplot(
 print(pcaPlot)
 ```
 
+```{r QC: batch heatmap}
+# Create a heatmap showing Batch 1 and Batch 2 samples separately
+sampleDist_batch <- cor(v$E, method = "spearman")
+batchColor <- brewer.pal(3, "Set2")[1:2]
+names(batchColor) <- unique(sample_conditions$batch)
+
+pheatmap(sampleDist_batch,
+  clustering_distance_rows = as.dist(1 - sampleDist_batch),
+  clustering_distance_cols = as.dist(1 - sampleDist_batch),
+  annotation_col = data.frame(Batch = factor(sample_conditions$batch), row.names = sample_conditions$sample),
+  annotation_colors = list(Batch = batchColor),
+  main = "Sample Correlation Heatmap by Batch")
+```
+```{r QC: PCA by Batch}
+# PCA Plot by Batch
+pcaRes_batch <- prcomp(t(v$E))
+varExp_batch <- round(pcaRes_batch$sdev^2 / sum(pcaRes_batch$sdev^2) * 100)
+pcaDF_batch <- data.frame(
+  PC1 = pcaRes_batch$x[, 1],
+  PC2 = pcaRes_batch$x[, 2],
+  Batch = factor(sample_conditions$batch),
+  Sample = sample_conditions$sample
+)
+pcaPlot_batch <- ggplot(
+  data = pcaDF_batch,
+  mapping = aes(x = PC1, y = PC2, color = Batch, label = Sample)
+) +
+  geom_point(size = 3) +
+  geom_text_repel(size = 4) +
+  labs(x = paste0("PC1 (", varExp_batch[1], " %)"),
+       y = paste0("PC2 (", varExp_batch[2], " %)"),
+       title = "PCA Plot of Samples by Batch") +
+  theme_minimal() +
+  theme(axis.text = element_text(size = 12), legend.text = element_text(size = 10)) +
+  scale_color_manual(values = brewer.pal(3, "Set2")) +
+  coord_fixed(ratio = 1)
+print(pcaPlot_batch)
+```
 ```{r QC: outlier removal}
 # Remove identified outliers
 # outliers <- c("C1_raw", "C2_raw", "C4_raw", "C5_raw", "C6_raw")
@@ -158,9 +209,26 @@ cat("Number of significant genes:", nrow(sigRes), "\n")
 knitr::kable(head(sigRes))
 ```
 
+```{r add gene symbols}
+count_data_with_symbols <- read.table("repo/func-omics/data/GSE53697_RNAseq_AD.txt", header = TRUE, sep = "\t", row.names = 1)
+gene_symbols <- count_data_with_symbols[, "GeneSymbol", drop = FALSE]
+sigRes$GeneID <- rownames(sigRes)  # Add GeneID as a column to the results
+gene_info <- merge(sigRes, gene_symbols, by.x = "GeneID", by.y = "row.names", all.x = TRUE)
+gene_info <- gene_info[, c("GeneID", "GeneSymbol", setdiff(names(gene_info), c("GeneID", "GeneSymbol")))]
+# write.table(gene_info, file = "sig_genes.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+```
+
 ```{r visualize results}
-volcanoPlot <- ggplot(res$table, aes(x = logFC, y = -log10(FDR),
-                                     color = ifelse(FDR < 0.05 & abs(logFC) > 1, "darkred", "grey"))) +
+# Add gene symbols to the results
+count_data_with_symbols <- read.table("repo/func-omics/data/GSE53697_RNAseq_AD.txt", header = TRUE, sep = "\t", row.names = 1)
+gene_symbols <- count_data_with_symbols[, "GeneSymbol", drop = FALSE]
+res$table$GeneID <- rownames(res$table)
+gene_info_all <- merge(res$table, gene_symbols, by.x = "GeneID", by.y = "row.names", all.x = TRUE)
+
+# Volcano plot using gene symbols for all genes
+volcanoPlot <- ggplot(gene_info_all, aes(x = logFC, y = -log10(FDR),
+                                         color = ifelse(FDR < 0.05 & abs(logFC) > 1, "darkred", "grey"),
+                                         label = ifelse(FDR < 0.05 & abs(logFC) > 1, GeneSymbol, ""))) +
   geom_point(alpha = 0.5, size = 2) +
   xlab(expression("Fold Change, Log"[2]*"")) +
   ylab(expression("Adjusted P value, Log"[10]*"")) +
@@ -169,8 +237,40 @@ volcanoPlot <- ggplot(res$table, aes(x = logFC, y = -log10(FDR),
   theme_minimal() +
   theme(legend.position = "none") +
   scale_colour_manual(values = c("darkred", "grey")) +
-  geom_text_repel(aes(label = ifelse(FDR < 0.05 & abs(logFC) > 1, rownames(res$table), "")),
-                  size = 3, max.overlaps = 10)
+  geom_text_repel(size = 3, max.overlaps = 10)
 
 print(volcanoPlot)
+```
+
+```{r protein-protein interation analysis}
+# Initialize STRINGdb
+string_db <- STRINGdb$new(version = "11", species = 9606, score_threshold = 400, input_directory = "")
+gene_symbols <- gene_info$GeneSymbol
+gene_symbols <- data.frame(GeneSymbol = gene_symbols, stringsAsFactors = FALSE)
+mapped_genes <- string_db$map(gene_symbols, "GeneSymbol", removeUnmappedRows = TRUE)
+# Get PPI Network for the mapped genes
+ppi_network <- string_db$get_interactions(mapped_genes$STRING_id)
+string_db$plot_network(mapped_genes$STRING_id)
+```
+```{r enrichGO SEA}
+gene_symbols_vector <- gene_symbols$GeneSymbol  # Extract the gene symbols as a vector
+mapped_genes_entrez <- bitr(gene_symbols_vector,
+                            fromType = "SYMBOL",
+                            toType = "ENTREZID",
+                            OrgDb = org.Hs.eg.db)
+
+goSEA <- enrichGO(gene = mapped_genes_entrez$ENTREZID,
+                  OrgDb = org.Hs.eg.db,
+                  keyType = "ENTREZID",
+                  ont = "BP",
+                  pAdjustMethod = "BH",
+                  pvalueCutoff = 0.05,
+                  qvalueCutoff = 0.05)
+```
+
+```{r Visualize GO SEA enrichment results}
+cnetplot(goSEA, colorEdge = TRUE, cex_label_gene = 0.5)
+dotplot(goSEA)
+goSEA <- pairwise_termsim(goSEA)
+treeplot(goSEA)
 ```
