@@ -145,6 +145,71 @@ dtModel <- sbf(
 confusionMatrix(dtModel$pred$predictions$pred, metadata$disease)
 ```
 
+# Spearman correlation analysis
+
+Loading the data for the correlaton analysis
+
+```{r}
+data <- read_tsv("data/voom_normalized.tsv")
+de_results <- read_tsv("data/significant_genes.tsv")
+metadata <- read_xlsx("data/ad_metadata.xlsx")
+```
+
+Performing Spearman correlation of the 63 upregulated genes on selected clinical variables of interest and comparing the correlation between Alzheimer's disease and control  samples.
+
+```{r , fig.width=20, fig.height=10}
+# Function to create correlation data and plot
+create_correlation_plot <- function(data, metadata, gene_symbols, variable, title) {
+  correlation_data <- data %>%
+    filter(GeneSymbol %in% gene_symbols) %>%
+    pivot_longer(cols = -GeneSymbol, names_to = "ID", values_to = "value") %>%
+    right_join(metadata, by = "ID") %>%
+    group_by(GeneSymbol, Disease) %>%
+    summarise(correlation = cor(value, !!rlang::sym(variable), method = "spearman"), .groups = "drop") %>%
+    ungroup()
+
+  # Extract the order of genes based on their correlation in AD
+  ad_correlations <- correlation_data %>%
+    filter(Disease == "AD") %>%
+    arrange(desc(correlation)) %>%
+    pull(GeneSymbol)
+
+  # Ensure that all GeneSymbols are included, even those not present in AD data
+  full_gene_list <- unique(correlation_data$GeneSymbol)
+  ad_order <- unique(c(ad_correlations, full_gene_list)) # This ensures all genes are included and in order
+
+  # Set the levels of GeneSymbol according to their order in AD
+  correlation_data$GeneSymbol <- factor(correlation_data$GeneSymbol, levels = ad_order)
+
+  # Plot the heatmap with genes ordered by their correlation in AD
+  heatmap_plot <- ggplot(correlation_data, aes(x = Disease, y = GeneSymbol, fill = correlation)) +
+    geom_tile() +
+    scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(fill = "Correlation", y = "Gene (ordered by AD correlation)", x = "Disease", title = title)
+
+  return(heatmap_plot)
+}
+
+# Variables of interest
+variables_of_interest <- c("Age", "PMI", "Mean_plaque", "CDR")
+
+# Plot list
+plot_list <- list()
+
+# Loop over variables and create plots
+for (variable in variables_of_interest) {
+  plot_list[[variable]] <- create_correlation_plot(data, metadata, de_results$GeneSymbol, variable, paste("Correlation with", variable))
+}
+
+# Combine plots
+combined_plot <- wrap_plots(plot_list, nrow = 1)
+
+# Print the combined plot
+print(combined_plot)
+```
+
 # Session info
 
 ```{r}
