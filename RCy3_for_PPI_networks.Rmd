@@ -1,0 +1,338 @@
+---
+title: "RCy3 for PPI networks"
+author: "Inika Prasad"
+date: "2024-11-29"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: pygments
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction 
+We will investigate protein-protein interactions (PPIs) for a given list of proteins. To do so, we will retreive PPI data from the STRING database and visualize networks in Cytoscape using the R package RCy3. We will further cluster the network to investigate whether subsets of proteins share a particular molecular function. 
+
+### Requirements 
+Cytoscape running, with the clusterMaker app installed.
+
+# Load libraries
+```{r message=FALSE, warning=FALSE}
+library(STRINGdb) 
+library(RCy3)
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(readxl)
+library(readr)
+library(ggplot2)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+```
+
+```{r}
+# Confirm that Cytoscape is running
+cytoscapeVersionInfo ()
+```
+
+# Load protein list 
+```{r}
+proteins <- readLines("data/gene_symbols_list.txt")
+head(proteins)
+```
+
+# Initialize STRING db
+```{r}
+# Initialize STRINGdb object 
+string_db <- STRINGdb$new(version="12.0", 
+                          species=9606, # Homo sapiens
+                          score_threshold=400, 
+                          input_directory="")
+```
+
+
+# Map gene names to STRING aliases 
+```{r}
+# Create a dataframe with uppercase letters (to match with STRING alias mapping)
+data <- data.frame(query.term = toupper(proteins)) 
+
+# check if file with mapping to STRING aliases exists
+# and create it if it doesn't
+if (file.exists("data/mapped2STRING.csv")) {
+  
+  mapped <- read.csv("data/mapped2STRING.csv")
+  
+} else {
+  
+mapped <- string_db$map(my_data_frame = data, 
+                        my_data_frame_id_col_names = "query.term", 
+                        takeFirst=TRUE, 
+                        removeUnmappedRows=TRUE, 
+                        quiet=FALSE)
+write.csv(x = mapped, file = "data/mapped2STRING.csv", quote = FALSE, row.names = FALSE)
+
+}
+
+head(mapped)
+```
+
+```{r}
+# Check how many proteins were not mapped
+# Since some gene IDs can map to several STRING identifiers, we account for duplicates 
+length(unique(data$query.term)) - length(unique(mapped$query.term))
+```
+# Fetch interaction data 
+```{r}
+# Get interactions for the mapped proteins if the file isn't already there
+
+# check if file with interaction data exists 
+# and create it if it doesn't
+if (file.exists("data/interactions.csv")) {
+  
+  interactions <- read.csv("data/interactions.csv")
+  
+} else {
+  
+interactions <- string_db$get_interactions(mapped$STRING_id)
+write.csv(x = interactions, file = "data/interactions.csv", quote = FALSE, row.names = FALSE)
+}
+
+# View the first few interactions 
+head(interactions)
+```
+
+# Create dataframe for PPI network
+Define nodes for the network
+```{r}
+# Get node columns for the Cytoscape network
+nodes <- data.frame(id = unique(c(interactions$from, interactions$to)))
+
+# Merge with the mapped protein names to include original protein names as labels
+nodes <- merge(nodes, mapped[, c("STRING_id", "query.term")], 
+               by.x = "id", by.y = "STRING_id", 
+               all.x = TRUE, 
+               all.y = TRUE)
+
+head(nodes)
+```
+
+Define edges for the network
+```{r}
+edges <- data.frame(source = interactions$from, target = interactions$to)
+
+# Remove directionality of edges (necessary for various clusterings later)
+# Combine and sort the columns, then get unique rows
+unique_edges <- unique(t(apply(edges, 1, function(x) sort(x))))
+
+# Convert back to a dataframe
+edges <- as.data.frame(unique_edges, stringsAsFactors = FALSE)
+
+# Rename the columns if needed
+colnames(edges) <- c("source", "target")
+
+head(edges)
+```
+
+# Make the network in Cytoscape
+```{r}
+# Connect to Cytoscape
+cytoscapePing()
+
+
+# Create a new Cytoscape network from your data
+createNetworkFromDataFrames(nodes = nodes, 
+                            edges = edges, 
+                            # title = mytitle, 
+                            collection = "My Collection")
+
+
+# Set node labels to the original protein names, and other visual tweaks
+setNodeLabelMapping('query.term')
+setNodeShapeDefault('ELLIPSE')
+setNodeColorDefault('#9fbcda')
+```
+
+Now we modify the network layout in the app to reduce overlap of nodes and make it overall more aesthetically pleasing. Parameters will depend on the network 
+
+```{r}
+# using force-directed layout. Higher coefficients means nodes are closer together. 
+layoutNetwork('force-directed defaultSpringCoefficient=0.000006 defaultSpringLength=1')
+```
+
+# Save and View the network 
+```{r}
+# Make sure network fits in the frame to be saved 
+fitContent()
+
+#save network image
+exportImage(filename = "currentnetwork.png") 
+
+# view network image
+knitr::include_graphics("currentnetwork.png") 
+```
+
+# Cluster PPI network 
+commands specify: restoreEdges: restores edges after clustering, showUI: displays the new network, and undirectedEdges: assumes edges are undirected
+
+## GLay clustering 
+Run GLay community clustering 
+```{r}
+# Run GLay community clustering
+RCy3::commandsRun("cluster glay restoreEdges= true showUI = true undirectedEdges = true")
+
+# reduce overlaps by making the nodes less inclined to be close to each other
+layoutNetwork('force-directed defaultSpringCoefficient=0.000006 defaultSpringLength=1')
+```
+
+Visualize network after clustering 
+```{r}
+# Make sure network fits in the frame to be saved 
+fitContent()
+
+#save network image
+exportImage(filename = "currentnetwork_clustered.png") 
+
+# view network image
+knitr::include_graphics("currentnetwork_clustered.png") 
+```
+
+
+# Save network info 
+```{r}
+# Get the table with clustering results 
+network_table <- getTableColumns()
+clusterinfo <- table(network_table$`__glayCluster`)
+clusterinfo
+```
+
+# Members of each big cluster 
+```{r}
+# Save the members of clusters with >5 nodes for subsequent analysis 
+bigclusters <- names(clusterinfo)[(table(network_table$`__glayCluster`) > 5)]
+bigclusternames <- paste0("cluster", bigclusters)
+
+# empty list of clusters to cycle through
+clusterlist <- list()
+
+for (i in 1:length(bigclusters)){
+  
+  # create given clustername
+  given_clustername <- bigclusternames[i]
+  
+  # make a list of these lists 
+  clusterlist[[i]] <- network_table$query.term[network_table$`__glayCluster` == bigclusters[i]]
+}
+
+names(clusterlist) <- bigclusternames
+```
+
+Members of each cluster
+```{r}
+clusterlist
+```
+
+
+# Enrichment analysis for each cluster (GO Biological Process)
+```{r}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+# Run enrichment analysis on each cluster 
+GO_BP_enrichments <- lapply(clusterlist, function(cluster) {
+  
+  enrichGO(gene = cluster,
+           OrgDb = org.Hs.eg.db,
+           keyType = "SYMBOL",
+           ont = "BP",
+           pAdjustMethod = "BH",
+           qvalueCutoff = 0.01)
+  
+})
+```
+
+Create dotplots for results 
+```{r}
+for (x in 1:length(GO_BP_enrichments)){
+  
+  # pick out object with enrichments 
+  enrichresult <- GO_BP_enrichments[[x]]
+  
+  # make dotplot object 
+  p <- dotplot(object = enrichresult) + 
+    ggtitle(paste0("ORA BP for ", names(clusterlist)[x]))
+  
+  print(p)
+}
+
+```
+
+
+# Enrichment analysis for each cluster (GO Molecular Function)
+```{r}
+# Run enrichment analysis on each cluster 
+GO_MF_enrichments <- lapply(clusterlist, function(cluster) {
+  
+  enrichGO(gene = cluster,
+           OrgDb = org.Hs.eg.db,
+           keyType = "SYMBOL",
+           ont = "MF",
+           pAdjustMethod = "BH",
+           qvalueCutoff = 0.01)
+  
+})
+```
+
+Create dotplots for results 
+```{r}
+for (x in 1:length(GO_MF_enrichments)){
+  
+  # pick out object with enrichments 
+  enrichresult <- GO_MF_enrichments[[x]]
+  
+  # make dotplot object 
+  p <- dotplot(object = enrichresult) + 
+    ggtitle(paste0("ORA MF for ", names(clusterlist)[x]))
+  
+  print(p)
+}
+
+```
+
+
+# Enrichment analysis for each cluster (GO Cellular Component)
+```{r}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+# Run enrichment analysis on each cluster 
+GO_CC_enrichments <- lapply(clusterlist, function(cluster) {
+  
+  enrichGO(gene = cluster,
+           OrgDb = org.Hs.eg.db,
+           keyType = "SYMBOL",
+           ont = "CC",
+           pAdjustMethod = "BH",
+           qvalueCutoff = 0.01)
+  
+})
+```
+
+Create dotplots for results 
+```{r}
+for (x in 1:length(GO_CC_enrichments)){
+  
+  # pick out object with enrichments 
+  enrichresult <- GO_CC_enrichments[[x]]
+  
+  # make dotplot object 
+  p <- dotplot(object = enrichresult) + 
+    ggtitle(paste0("ORA CC for ", names(clusterlist)[x]))
+  
+  print(p)
+}
+
+```
