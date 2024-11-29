@@ -1,0 +1,497 @@
+---
+title: "Group 2 report: Characterization of Alzheimer's disease"
+subtitle: "A project for the course Statistics in Bioinformatics"
+author: "Emil Johansson"
+date: last-modified
+date-format: "dddd [the] Do [of] MMMM YYYY"
+format:
+  html:
+    theme: lumen
+    title-block-banner: true
+    smooth-scroll: true
+    toc: true
+    toc-depth: 4
+    toc-location: right
+    number-sections: true
+    number-depth: 4
+    code-fold: true
+    code-tools: true
+    code-copy: true
+    code-overflow: wrap
+    df-print: kable
+    standalone: true
+    fig-align: left
+    figure:
+      caption: "Figure {number}: {label}"
+editor_options: 
+  chunk_output_type: inline
+execute:
+  echo: true
+  message: false
+  warning: false
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+# Setup
+
+```{r}
+# Libraries we need
+libs <- c(
+  "tidyverse", "readxl", "limma", "ggrepel", "magrittr", "kableExtra",
+  "patchwork", "DT", "tidymodels", "ggbeeswarm", "gt", "skimr", "GGally",
+  "visdat", "corrr", "ggsignif", "vip", "themis", "keras", "xgboost", "kknn",
+  "tensorflow", "xlsx", "HDAnalyzeR", "plotly", "umap", "uwot", "ggplotify",
+  "cowplot", "ggvenn", "UpSetR", "ComplexUpset", "DESeq2", "pheatmap", "randomForest",
+  "caret", "edgeR", "STRINGdb", "igraph", "clusterProfiler", "org.Hs.eg.db", "enrichplot"
+)
+
+# Install missing libraries
+installed_libs <- libs %in% rownames(installed.packages())
+if (any(installed_libs == FALSE)) {
+  install.packages(libs[!installed_libs])
+}
+
+# Load libraries
+invisible(lapply(libs, library, character.only = TRUE))
+```
+
+# QC
+
+```{r load-libraries}
+library(dplyr)
+library(DESeq2)
+library(edgeR)
+library(limma)
+library(pheatmap)
+library(ggplot2)
+library(ggrepel)
+library(RColorBrewer)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(STRINGdb)
+library(igraph)
+```
+
+```{r load data}
+# Load gene expression count data
+count_data <- read.table("data/GSE53697_RNAseq_AD.txt", header = TRUE, sep = "\t", row.names = 1) %>%
+  dplyr::select(matches("_raw$"))
+```
+
+```{r preprocess data}
+# Round counts to integers
+count_data_filtered <- count_data %>% 
+  dplyr::select(starts_with("C"), starts_with("A")) %>%
+  mutate_all(~round(.))
+```
+
+```{r filter low counts using mean log2 CPM}
+count_data_filtered <- count_data
+genes_before_filtering <- nrow(count_data_filtered)
+cat("Number of genes before filtering:", genes_before_filtering, "\n")
+dge <- DGEList(counts = count_data_filtered)
+# dge <- calcNormFactors(dge)
+meanLog2CPM <- rowMeans(log2(cpm(dge) + 1))
+hist(meanLog2CPM, main = "Histogram of Mean Log2 CPM", xlab = "Mean Log2 CPM")
+count_data_filtered <- count_data_filtered[meanLog2CPM > 1, ]
+genes_after_filtering <- nrow(count_data_filtered)
+cat("Number of genes after filtering:", genes_after_filtering, "\n")
+sample_conditions <- data.frame(
+  sample = colnames(count_data_filtered),
+  condition = ifelse(grepl("^C", colnames(count_data_filtered)), "HC", "AD"),
+  batch = c(0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1)  # Manually adding batch information
+)
+```
+
+```{r normalization with Voom}
+dge <- DGEList(counts = count_data_filtered)
+dge <- calcNormFactors(dge)
+# design <- model.matrix(~ condition + batch, data = sample_conditions)
+design <- model.matrix(~ condition + factor(batch), data = sample_conditions)
+v <- voom(dge, design, plot = TRUE)
+head(v$E)
+hist(v$E, breaks = 50, main = "Distribution of Voom Normalized Counts", xlab = "Voom Normalized Counts")
+```
+
+```{r normalization with DESeq2}
+# dds <- DESeqDataSetFromMatrix(countData = count_data_filtered, 
+#                               colData = sample_conditions, 
+#                               design = ~ condition + factor(batch))
+# Normalize counts using variance stabilizing transformation (vst)
+# normCounts <- vst(dds, blind = TRUE)
+# assay(normCounts)[1:5, 1:5]
+# hist(assay(normCounts), breaks = 50, main = "Distribution of VST Normalized Counts", xlab = "Normalized Counts")
+```
+
+```{r save normalized results}
+count_data_with_symbols <- read.table("data/GSE53697_RNAseq_AD.txt", header = TRUE, sep = "\t", row.names = 1)
+gene_symbols <- count_data_with_symbols[, "GeneSymbol", drop = FALSE]
+voom_normalized <- as.data.frame(v$E)  # Convert v$E to a data frame
+voom_normalized$GeneID <- rownames(voom_normalized)  # Add GeneID as a column
+gene_info_voom <- merge(voom_normalized, gene_symbols, by.x = "GeneID", by.y = "row.names", all.x = TRUE)
+gene_info_voom <- gene_info_voom[, c("GeneID", "GeneSymbol", setdiff(names(gene_info_voom), c("GeneID", "GeneSymbol")))]
+# write.table(gene_info_voom, file = "voom_normalized.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+```
+
+```{r QC: condition heatmap}
+# sampleDist <- cor(assay(normCounts), method = "spearman")
+sampleDist <- cor(v$E, method = "spearman")
+sampleColor <- brewer.pal(3, "Accent")[1:2]
+names(sampleColor) <- unique(sample_conditions$condition)
+
+pheatmap(sampleDist,
+  clustering_distance_rows = as.dist(1 - sampleDist),
+  clustering_distance_cols = as.dist(1 - sampleDist),
+  annotation_col = data.frame(Condition = sample_conditions$condition, row.names = sample_conditions$sample),
+  annotation_colors = list(Storage = sampleColor),
+  main = "Sample Correlation Heatmap by Condition")
+```
+```{r QC: PCA by condition}
+# pcaRes <- prcomp(t(assay(normCounts)))
+pcaRes <- prcomp(t(v$E))
+varExp <- round(pcaRes$sdev^2 / sum(pcaRes$sdev^2) * 100)
+pcaDF <- data.frame(
+  PC1 = pcaRes$x[, 1],
+  PC2 = pcaRes$x[, 2],
+  Condition = sample_conditions$condition,
+  Sample = sample_conditions$sample
+)
+pcaPlot <- ggplot(
+  data = pcaDF,
+  mapping = aes(x = PC1, y = PC2, color = Condition, label = Sample)
+) +
+  geom_point(size = 3) +
+  geom_text_repel(size = 4) +
+  labs(x = paste0("PC1 (", varExp[1], " %)") ,
+       y = paste0("PC2 (", varExp[2], " %)") ,
+       title = "PCA Plot of Samples") +
+  theme_minimal() +
+  theme(axis.text = element_text(size = 12), legend.text = element_text(size = 10)) +
+  scale_color_manual(values = brewer.pal(3, "Accent")) +
+  coord_fixed(ratio = 1)  # Added fixed ratio to ensure equal scaling between PC1 and PC2
+print(pcaPlot)
+```
+
+```{r QC: batch heatmap}
+# Create a heatmap showing Batch 1 and Batch 2 samples separately
+sampleDist_batch <- cor(v$E, method = "spearman")
+batchColor <- brewer.pal(3, "Set2")[1:2]
+names(batchColor) <- unique(sample_conditions$batch)
+
+pheatmap(sampleDist_batch,
+  clustering_distance_rows = as.dist(1 - sampleDist_batch),
+  clustering_distance_cols = as.dist(1 - sampleDist_batch),
+  annotation_col = data.frame(Batch = factor(sample_conditions$batch), row.names = sample_conditions$sample),
+  annotation_colors = list(Batch = batchColor),
+  main = "Sample Correlation Heatmap by Batch")
+```
+```{r QC: PCA by Batch}
+# PCA Plot by Batch
+pcaRes_batch <- prcomp(t(v$E))
+varExp_batch <- round(pcaRes_batch$sdev^2 / sum(pcaRes_batch$sdev^2) * 100)
+pcaDF_batch <- data.frame(
+  PC1 = pcaRes_batch$x[, 1],
+  PC2 = pcaRes_batch$x[, 2],
+  Batch = factor(sample_conditions$batch),
+  Sample = sample_conditions$sample
+)
+pcaPlot_batch <- ggplot(
+  data = pcaDF_batch,
+  mapping = aes(x = PC1, y = PC2, color = Batch, label = Sample)
+) +
+  geom_point(size = 3) +
+  geom_text_repel(size = 4) +
+  labs(x = paste0("PC1 (", varExp_batch[1], " %)"),
+       y = paste0("PC2 (", varExp_batch[2], " %)"),
+       title = "PCA Plot of Samples by Batch") +
+  theme_minimal() +
+  theme(axis.text = element_text(size = 12), legend.text = element_text(size = 10)) +
+  scale_color_manual(values = brewer.pal(3, "Set2")) +
+  coord_fixed(ratio = 1)
+print(pcaPlot_batch)
+```
+
+```{r QC: outlier removal}
+# Remove identified outliers
+# outliers <- c("C1_raw", "C2_raw", "C4_raw", "C5_raw", "C6_raw")
+outliers <- c("C1_raw", "C5_raw", "C6_raw")
+remaining_samples <- setdiff(colnames(count_data_filtered), outliers)
+count_data_filtered <- count_data_filtered[, remaining_samples]
+sample_conditions <- sample_conditions[!sample_conditions$sample %in% outliers, ]
+```
+
+# Differential expression analysis
+
+## Design matrix
+
+```{r statistical analyses}
+# Define design matrix including batch effect
+# designMatrix <- model.matrix(~ 0 + condition + batch, data = sample_conditions)
+designMatrix <- model.matrix(~ 0 + condition + factor(batch), data = sample_conditions)
+
+colnames(designMatrix) <- make.names(colnames(designMatrix))  # Ensure valid column names for contrast matrix
+cat("Design Matrix with Batch Effect:\n")
+print(head(designMatrix))
+
+# Define contrast matrix
+contrastMatrix <- makeContrasts(AD_vs_HC = conditionAD - conditionHC, levels = designMatrix)
+cat("Contrast Matrix:\n")
+print(contrastMatrix)
+
+# Prepare DGEList and estimate dispersion
+dge <- DGEList(count_data_filtered)
+dge <- calcNormFactors(dge)
+dge <- estimateDisp(dge, designMatrix, robust = TRUE)
+
+# Fit the model using likelihood ratio test (LRT), now including batch in the design
+fit <- glmFit(dge, designMatrix)
+lrt <- glmLRT(fit, contrast = contrastMatrix)
+```
+
+## Hypothesis correction
+
+```{r hypothesis testing}
+res <- topTags(lrt, n = nrow(count_data_filtered))
+res$table$FDR <- p.adjust(res$table$PValue, method = "BH")
+cat("Summary of p-values:\n")
+print(summary(res$table$PValue))
+cat("Summary of FDRs:\n")
+print(summary(res$table$FDR))
+sigRes <- subset(res$table, FDR < 0.05 & abs(logFC) > 1)
+cat("Number of significant genes:", nrow(sigRes), "\n")
+knitr::kable(head(sigRes))
+```
+
+```{r add gene symbols}
+count_data_with_symbols <- read.table("data/GSE53697_RNAseq_AD.txt", header = TRUE, sep = "\t", row.names = 1)
+gene_symbols <- count_data_with_symbols[, "GeneSymbol", drop = FALSE]
+sigRes$GeneID <- rownames(sigRes)  # Add GeneID as a column to the results
+gene_info <- merge(sigRes, gene_symbols, by.x = "GeneID", by.y = "row.names", all.x = TRUE)
+gene_info <- gene_info[, c("GeneID", "GeneSymbol", setdiff(names(gene_info), c("GeneID", "GeneSymbol")))]
+# write.table(gene_info, file = "sig_genes.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+```
+
+## Volcano plot
+
+```{r visualize results}
+# Add gene symbols to the results
+count_data_with_symbols <- read.table("data/GSE53697_RNAseq_AD.txt", header = TRUE, sep = "\t", row.names = 1)
+gene_symbols <- count_data_with_symbols[, "GeneSymbol", drop = FALSE]
+res$table$GeneID <- rownames(res$table)
+gene_info_all <- merge(res$table, gene_symbols, by.x = "GeneID", by.y = "row.names", all.x = TRUE)
+
+# Volcano plot using gene symbols for all genes
+volcanoPlot <- ggplot(gene_info_all, aes(x = logFC, y = -log10(FDR),
+                                         color = ifelse(FDR < 0.05 & abs(logFC) > 1, "darkred", "grey"),
+                                         label = ifelse(FDR < 0.05 & abs(logFC) > 1, GeneSymbol, ""))) +
+  geom_point(alpha = 0.5, size = 2) +
+  xlab(expression("Fold Change, Log"[2]*"")) +
+  ylab(expression("Adjusted P value, Log"[10]*"")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dotted", linewidth = 1) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dotted", linewidth = 1) +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  scale_colour_manual(values = c("darkred", "grey")) +
+  geom_text_repel(size = 3, max.overlaps = 10)
+
+print(volcanoPlot)
+```
+
+# Protein-protein interaction analysis
+
+```{r protein-protein interation analysis}
+# Initialize STRINGdb
+string_db <- STRINGdb$new(version = "11", species = 9606, score_threshold = 400, input_directory = "")
+gene_symbols <- gene_info$GeneSymbol
+gene_symbols <- data.frame(GeneSymbol = gene_symbols, stringsAsFactors = FALSE)
+mapped_genes <- string_db$map(gene_symbols, "GeneSymbol", removeUnmappedRows = TRUE)
+# Get PPI Network for the mapped genes
+ppi_network <- string_db$get_interactions(mapped_genes$STRING_id)
+string_db$plot_network(mapped_genes$STRING_id)
+```
+```{r enrichGO SEA}
+gene_symbols_vector <- gene_symbols$GeneSymbol  # Extract the gene symbols as a vector
+mapped_genes_entrez <- bitr(gene_symbols_vector,
+                            fromType = "SYMBOL",
+                            toType = "ENTREZID",
+                            OrgDb = org.Hs.eg.db)
+
+goSEA <- enrichGO(gene = mapped_genes_entrez$ENTREZID,
+                  OrgDb = org.Hs.eg.db,
+                  keyType = "ENTREZID",
+                  ont = "BP",
+                  pAdjustMethod = "BH",
+                  pvalueCutoff = 0.05,
+                  qvalueCutoff = 0.05)
+```
+
+# Enrichment analysis
+
+```{r Visualize GO SEA enrichment results}
+cnetplot(goSEA, colorEdge = TRUE, cex_label_gene = 0.5)
+dotplot(goSEA)
+goSEA <- pairwise_termsim(goSEA)
+treeplot(goSEA)
+```
+
+# Random forest classification
+
+## Prepare data
+
+```{r}
+# Load and prepare the data
+data_raw <- read_tsv("data/voom_normalized.tsv")
+data <- data_raw %>%
+  distinct(GeneSymbol, .keep_all = TRUE) %>%
+  dplyr::select(-GeneID) %>%
+  filter(!is.na(GeneSymbol)) %>%
+  column_to_rownames(var = "GeneSymbol") %>%
+  mutate_all(~ ifelse(. < 0, 0, .)) %>%
+  mutate_all(as.integer)
+
+# Prepare metadata
+metadata_raw <- read_xlsx("data/ad_metadata.xlsx")
+metadata <- metadata_raw %>%
+  mutate(Index = row_number()) %>%
+  column_to_rownames(var = "Index") %>%
+  dplyr::rename(sample = ID, disease = Disease) %>%
+  mutate(individual = gsub("_raw", "", sample)) %>%
+  dplyr::select(sample, individual, disease) %>%
+  mutate(individual = factor(individual), disease = factor(disease))
+
+# Ensure the data is in a matrix form with gene symbols as rownames
+countData <- as.matrix(data)
+
+# Prepare DESeqDataSet
+dds <- DESeqDataSetFromMatrix(
+  countData = countData,
+  colData = metadata,
+  design = ~ 0 + disease
+)
+
+# Estimate size factors
+dds <- estimateSizeFactors(dds)
+
+# Estimate gene-wise dispersions
+dds <- estimateDispersionsGeneEst(dds)
+
+# Directly use the gene-wise estimates
+dispersions(dds) <- mcols(dds)$dispGeneEst
+
+normCounts <- varianceStabilizingTransformation(dds, blind = FALSE)
+```
+
+```{r}
+#Define model fitting procedure
+#NB: you will also need the packages statmod and e1071 for this analysis
+#New score function
+rfSBF$score <- function(x, y){
+sd(x) / mean(x)
+}
+#New filter function
+rfSBF$filter <- function(score, x, y){
+meanLog2CPM <- rowMeans(log2(cpm(data) + 1))
+selection <- score > quantile(score, 0.9) & meanLog2CPM > 1
+names(score) %in% names(score)[selection]
+}
+```
+
+```{r}
+#Create training set
+trainingSet <- data.frame(t(assay(normCounts)))
+#Train and validate decision tree (C5.0)
+dtControl <- sbfControl(
+  functions = rfSBF,
+  method = "loocv",
+  saveDetails = TRUE,
+  verbose = FALSE)
+
+dtModel <- sbf(
+  trainingSet,
+  metadata$disease,
+  sbfControl = dtControl)
+
+#Show model
+#summary(dtModel$fit)
+```
+
+## Performance evaluation
+
+```{r}
+#Print confusion matrix from validation
+confusionMatrix(dtModel$pred$predictions$pred, metadata$disease)
+```
+
+# Spearman correlation analysis
+
+Loading the data for the correlaton analysis
+
+```{r}
+data <- read_tsv("data/voom_normalized.tsv")
+de_results <- read_tsv("data/significant_genes.tsv")
+metadata <- read_xlsx("data/ad_metadata.xlsx")
+```
+
+Performing Spearman correlation of the 63 upregulated genes on selected clinical variables of interest and comparing the correlation between Alzheimer's disease and control  samples.
+
+```{r , fig.width=20, fig.height=10}
+# Function to create correlation data and plot
+create_correlation_plot <- function(data, metadata, gene_symbols, variable, title) {
+  correlation_data <- data %>%
+    filter(GeneSymbol %in% gene_symbols) %>%
+    pivot_longer(cols = -GeneSymbol, names_to = "ID", values_to = "value") %>%
+    right_join(metadata, by = "ID") %>%
+    group_by(GeneSymbol, Disease) %>%
+    summarise(correlation = cor(value, !!rlang::sym(variable), method = "spearman"), .groups = "drop") %>%
+    ungroup()
+
+  # Extract the order of genes based on their correlation in AD
+  ad_correlations <- correlation_data %>%
+    filter(Disease == "AD") %>%
+    arrange(desc(correlation)) %>%
+    pull(GeneSymbol)
+
+  # Ensure that all GeneSymbols are included, even those not present in AD data
+  full_gene_list <- unique(correlation_data$GeneSymbol)
+  ad_order <- unique(c(ad_correlations, full_gene_list)) # This ensures all genes are included and in order
+
+  # Set the levels of GeneSymbol according to their order in AD
+  correlation_data$GeneSymbol <- factor(correlation_data$GeneSymbol, levels = ad_order)
+
+  # Plot the heatmap with genes ordered by their correlation in AD
+  heatmap_plot <- ggplot(correlation_data, aes(x = Disease, y = GeneSymbol, fill = correlation)) +
+    geom_tile() +
+    scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(fill = "Correlation", y = "Gene (ordered by AD correlation)", x = "Disease", title = title)
+
+  return(heatmap_plot)
+}
+
+# Variables of interest
+variables_of_interest <- c("Age", "PMI", "Mean_plaque", "CDR")
+
+# Plot list
+plot_list <- list()
+
+# Loop over variables and create plots
+for (variable in variables_of_interest) {
+  plot_list[[variable]] <- create_correlation_plot(data, metadata, de_results$GeneSymbol, variable, paste("Correlation with", variable))
+}
+
+# Combine plots
+combined_plot <- wrap_plots(plot_list, nrow = 1)
+
+# Print the combined plot
+print(combined_plot)
+```
+
+# Session info
+
+```{r}
+sessionInfo()
+```
