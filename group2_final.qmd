@@ -5,7 +5,7 @@ author: "Emil Johansson, Inika Prasad, Vaishnavi Divya Shridar & Yuqi Zheng"
 date: last-modified
 date-format: "dddd [the] Do [of] MMMM YYYY"
 format:
-  pdf:
+  html:
     theme: lumen
     title-block-banner: true
     smooth-scroll: true
