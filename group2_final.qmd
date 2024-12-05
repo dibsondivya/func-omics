@@ -1,0 +1,1096 @@
+---
+title: "Group 2 report: Characterization of Alzheimer's disease"
+subtitle: "A project for the course Statistics in Bioinformatics"
+author: "Emil Johansson, Inika Prasad, Vaishnavi Divya Shridar & Yuqi Zheng"
+date: last-modified
+date-format: "dddd [the] Do [of] MMMM YYYY"
+format:
+  pdf:
+    theme: lumen
+    title-block-banner: true
+    smooth-scroll: true
+    toc: true
+    toc-depth: 4
+    toc-location: right
+    number-sections: true
+    number-depth: 4
+    code-fold: true
+    code-tools: true
+    code-copy: true
+    code-overflow: wrap
+    df-print: kable
+    standalone: true
+    fig-align: left
+    figure:
+      caption: "Figure {number}: {label}"
+editor_options: 
+  chunk_output_type: inline
+execute:
+  echo: true
+  message: false
+  warning: false
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+# Setup
+
+```{r}
+#if (!require("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+
+#BiocManager::install("RCy3")
+```
+
+```{r}
+# Libraries we need
+libs <- c(
+  "tidyverse", "readxl", "limma", "ggrepel", "magrittr", "kableExtra",
+  "patchwork", "DT", "tidymodels", "ggbeeswarm", "gt", "skimr", "GGally",
+  "visdat", "corrr", "ggsignif", "vip", "themis", "keras", "xgboost", "kknn",
+  "tensorflow", "xlsx", "HDAnalyzeR", "plotly", "umap", "uwot", "ggplotify",
+  "cowplot", "ggvenn", "UpSetR", "ComplexUpset", "DESeq2", "pheatmap", "randomForest",
+  "caret", "edgeR", "STRINGdb", "igraph", "clusterProfiler", "org.Hs.eg.db", "enrichplot",
+  "egg", "RCy3", "RColorBrewer"
+)
+
+# Install missing libraries
+installed_libs <- libs %in% rownames(installed.packages())
+if (any(installed_libs == FALSE)) {
+  install.packages(libs[!installed_libs])
+}
+
+# Load libraries
+invisible(lapply(libs, library, character.only = TRUE))
+```
+
+# QC
+
+```{r load data}
+# Load gene expression count data
+count_data <- read.table("data/GSE53697_RNAseq_AD.txt", header = TRUE, sep = "\t", row.names = 1) %>%
+  dplyr::select(matches("_raw$"))
+```
+
+```{r preprocess data}
+# Round counts to integers
+count_data_filtered <- count_data %>% 
+  dplyr::select(starts_with("C"), starts_with("A")) %>%
+  mutate_all(~round(.))
+```
+
+```{r filter low counts using mean log2 CPM}
+count_data_filtered <- count_data
+genes_before_filtering <- nrow(count_data_filtered)
+cat("Number of genes before filtering:", genes_before_filtering, "\n")
+dge <- DGEList(counts = count_data_filtered)
+# dge <- calcNormFactors(dge)
+meanLog2CPM <- rowMeans(log2(cpm(dge) + 1))
+hist(meanLog2CPM, main = "Histogram of Mean Log2 CPM", xlab = "Mean Log2 CPM")
+count_data_filtered <- count_data_filtered[meanLog2CPM > 1, ]
+genes_after_filtering <- nrow(count_data_filtered)
+cat("Number of genes after filtering:", genes_after_filtering, "\n")
+sample_conditions <- data.frame(
+  sample = colnames(count_data_filtered),
+  condition = ifelse(grepl("^C", colnames(count_data_filtered)), "HC", "AD"),
+  batch = c(0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1)  # Manually adding batch information
+)
+```
+
+```{r normalization with Voom}
+dge <- DGEList(counts = count_data_filtered)
+#dge <- calcNormFactors(dge)
+# design <- model.matrix(~ condition + batch, data = sample_conditions)
+design <- model.matrix(~ condition + factor(batch), data = sample_conditions)
+v <- voom(dge, design, plot = TRUE)
+head(v$E)
+hist(v$E, breaks = 50, main = "Distribution of Voom Normalized Counts", xlab = "Voom Normalized Counts")
+```
+
+```{r normalization with DESeq2}
+# dds <- DESeqDataSetFromMatrix(countData = count_data_filtered, 
+#                               colData = sample_conditions, 
+#                               design = ~ condition + factor(batch))
+# Normalize counts using variance stabilizing transformation (vst)
+# normCounts <- vst(dds, blind = TRUE)
+# assay(normCounts)[1:5, 1:5]
+# hist(assay(normCounts), breaks = 50, main = "Distribution of VST Normalized Counts", xlab = "Normalized Counts")
+```
+
+```{r save normalized results}
+count_data_with_symbols <- read.table("data/GSE53697_RNAseq_AD.txt", header = TRUE, sep = "\t", row.names = 1)
+gene_symbols <- count_data_with_symbols[, "GeneSymbol", drop = FALSE]
+voom_normalized <- as.data.frame(v$E)  # Convert v$E to a data frame
+voom_normalized$GeneID <- rownames(voom_normalized)  # Add GeneID as a column
+gene_info_voom <- merge(voom_normalized, gene_symbols, by.x = "GeneID", by.y = "row.names", all.x = TRUE)
+gene_info_voom <- gene_info_voom[, c("GeneID", "GeneSymbol", setdiff(names(gene_info_voom), c("GeneID", "GeneSymbol")))]
+# write.table(gene_info_voom, file = "voom_normalized.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+```
+
+```{r QC: condition heatmap}
+# sampleDist <- cor(assay(normCounts), method = "spearman")
+sampleDist <- cor(v$E, method = "spearman")
+sampleColor <- brewer.pal(3, "Accent")[1:2]
+names(sampleColor) <- unique(sample_conditions$condition)
+
+pheatmap(sampleDist,
+  clustering_distance_rows = as.dist(1 - sampleDist),
+  clustering_distance_cols = as.dist(1 - sampleDist),
+  annotation_col = data.frame(Condition = sample_conditions$condition, row.names = sample_conditions$sample),
+  annotation_colors = list(Storage = sampleColor),
+  main = "Sample Correlation Heatmap by Condition")
+```
+```{r QC: PCA by condition}
+# pcaRes <- prcomp(t(assay(normCounts)))
+pcaRes <- prcomp(t(v$E))
+varExp <- round(pcaRes$sdev^2 / sum(pcaRes$sdev^2) * 100)
+pcaDF <- data.frame(
+  PC1 = pcaRes$x[, 1],
+  PC2 = pcaRes$x[, 2],
+  Condition = sample_conditions$condition,
+  Sample = sample_conditions$sample
+)
+pcaPlot <- ggplot(
+  data = pcaDF,
+  mapping = aes(x = PC1, y = PC2, color = Condition, label = Sample)
+) +
+  geom_point(size = 3) +
+  geom_text_repel(size = 4) +
+  labs(x = paste0("PC1 (", varExp[1], " %)") ,
+       y = paste0("PC2 (", varExp[2], " %)") ,
+       title = "PCA Plot of Samples") +
+  theme_minimal() +
+  theme(axis.text = element_text(size = 12), legend.text = element_text(size = 10)) +
+  scale_color_manual(values = brewer.pal(3, "Accent")) +
+  coord_fixed(ratio = 1)  # Added fixed ratio to ensure equal scaling between PC1 and PC2
+print(pcaPlot)
+```
+
+```{r QC: batch heatmap}
+# Create a heatmap showing Batch 1 and Batch 2 samples separately
+sampleDist_batch <- cor(v$E, method = "spearman")
+batchColor <- brewer.pal(3, "Set2")[1:2]
+names(batchColor) <- unique(sample_conditions$batch)
+
+pheatmap(sampleDist_batch,
+  clustering_distance_rows = as.dist(1 - sampleDist_batch),
+  clustering_distance_cols = as.dist(1 - sampleDist_batch),
+  annotation_col = data.frame(Batch = factor(sample_conditions$batch), row.names = sample_conditions$sample),
+  annotation_colors = list(Batch = batchColor),
+  main = "Sample Correlation Heatmap by Batch")
+```
+```{r QC: PCA by Batch}
+# PCA Plot by Batch
+pcaRes_batch <- prcomp(t(v$E))
+varExp_batch <- round(pcaRes_batch$sdev^2 / sum(pcaRes_batch$sdev^2) * 100)
+pcaDF_batch <- data.frame(
+  PC1 = pcaRes_batch$x[, 1],
+  PC2 = pcaRes_batch$x[, 2],
+  Batch = factor(sample_conditions$batch),
+  Sample = sample_conditions$sample
+)
+pcaPlot_batch <- ggplot(
+  data = pcaDF_batch,
+  mapping = aes(x = PC1, y = PC2, color = Batch, label = Sample)
+) +
+  geom_point(size = 3) +
+  geom_text_repel(size = 4) +
+  labs(x = paste0("PC1 (", varExp_batch[1], " %)"),
+       y = paste0("PC2 (", varExp_batch[2], " %)"),
+       title = "PCA Plot of Samples by Batch") +
+  theme_minimal() +
+  theme(axis.text = element_text(size = 12), legend.text = element_text(size = 10)) +
+  scale_color_manual(values = brewer.pal(3, "Set2")) +
+  coord_fixed(ratio = 1)
+print(pcaPlot_batch)
+```
+
+```{r QC: outlier removal}
+# Remove identified outliers
+# outliers <- c("C1_raw", "C2_raw", "C4_raw", "C5_raw", "C6_raw")
+outliers <- c("C1_raw", "C5_raw", "C6_raw")
+remaining_samples <- setdiff(colnames(count_data_filtered), outliers)
+count_data_filtered <- count_data_filtered[, remaining_samples]
+sample_conditions <- sample_conditions[!sample_conditions$sample %in% outliers, ]
+```
+
+# Differential expression analysis
+
+## Design matrix
+
+```{r statistical analyses}
+# Define design matrix including batch effect
+# designMatrix <- model.matrix(~ 0 + condition + batch, data = sample_conditions)
+designMatrix <- model.matrix(~ 0 + condition + factor(batch), data = sample_conditions)
+
+colnames(designMatrix) <- make.names(colnames(designMatrix))  # Ensure valid column names for contrast matrix
+cat("Design Matrix with Batch Effect:\n")
+print(head(designMatrix))
+
+# Define contrast matrix
+contrastMatrix <- makeContrasts(AD_vs_HC = conditionAD - conditionHC, levels = designMatrix)
+cat("Contrast Matrix:\n")
+print(contrastMatrix)
+
+# Prepare DGEList and estimate dispersion
+dge <- DGEList(count_data_filtered)
+dge <- calcNormFactors(dge)
+dge <- estimateDisp(dge, designMatrix, robust = TRUE)
+
+# Fit the model using likelihood ratio test (LRT), now including batch in the design
+fit <- glmFit(dge, designMatrix)
+lrt <- glmLRT(fit, contrast = contrastMatrix)
+```
+
+## Hypothesis correction
+
+```{r hypothesis testing}
+res <- topTags(lrt, n = nrow(count_data_filtered))
+res$table$FDR <- p.adjust(res$table$PValue, method = "BH")
+cat("Summary of p-values:\n")
+print(summary(res$table$PValue))
+cat("Summary of FDRs:\n")
+print(summary(res$table$FDR))
+sigRes <- subset(res$table, FDR < 0.05 & abs(logFC) > 1)
+cat("Number of significant genes:", nrow(sigRes), "\n")
+knitr::kable(head(sigRes))
+```
+
+```{r add gene symbols}
+count_data_with_symbols <- read.table("data/GSE53697_RNAseq_AD.txt", header = TRUE, sep = "\t", row.names = 1)
+gene_symbols <- count_data_with_symbols[, "GeneSymbol", drop = FALSE]
+sigRes$GeneID <- rownames(sigRes)  # Add GeneID as a column to the results
+gene_info <- merge(sigRes, gene_symbols, by.x = "GeneID", by.y = "row.names", all.x = TRUE)
+gene_info <- gene_info[, c("GeneID", "GeneSymbol", setdiff(names(gene_info), c("GeneID", "GeneSymbol")))]
+# write.table(gene_info, file = "sig_genes.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+```
+
+## Volcano plot
+
+```{r visualize results}
+# Add gene symbols to the results
+count_data_with_symbols <- read.table("data/GSE53697_RNAseq_AD.txt", header = TRUE, sep = "\t", row.names = 1)
+gene_symbols <- count_data_with_symbols[, "GeneSymbol", drop = FALSE]
+res$table$GeneID <- rownames(res$table)
+gene_info_all <- merge(res$table, gene_symbols, by.x = "GeneID", by.y = "row.names", all.x = TRUE)
+
+# Volcano plot using gene symbols for all genes
+volcanoPlot <- ggplot(gene_info_all, aes(x = logFC, y = -log10(FDR),
+                                         color = ifelse(FDR < 0.05 & abs(logFC) > 1, "darkred", "grey"),
+                                         label = ifelse(FDR < 0.05 & abs(logFC) > 1, GeneSymbol, ""))) +
+  geom_point(alpha = 0.5, size = 2) +
+  xlab(expression("Fold Change, Log"[2]*"")) +
+  ylab(expression("Adjusted P value, Log"[10]*"")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dotted", linewidth = 1) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dotted", linewidth = 1) +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  scale_colour_manual(values = c("darkred", "grey")) +
+  geom_text_repel(size = 3, max.overlaps = 10)
+
+print(volcanoPlot)
+```
+
+# Protein-protein interaction analysis
+
+```{r protein-protein interation analysis}
+# Initialize STRINGdb
+string_db <- STRINGdb$new(version = "11", species = 9606, score_threshold = 400, input_directory = "")
+gene_symbols <- gene_info$GeneSymbol
+gene_symbols <- data.frame(GeneSymbol = gene_symbols, stringsAsFactors = FALSE)
+mapped_genes <- string_db$map(gene_symbols, "GeneSymbol", removeUnmappedRows = TRUE)
+# Get PPI Network for the mapped genes
+ppi_network <- string_db$get_interactions(mapped_genes$STRING_id)
+string_db$plot_network(mapped_genes$STRING_id)
+```
+```{r enrichGO SEA}
+gene_symbols_vector <- gene_symbols$GeneSymbol  # Extract the gene symbols as a vector
+mapped_genes_entrez <- bitr(gene_symbols_vector,
+                            fromType = "SYMBOL",
+                            toType = "ENTREZID",
+                            OrgDb = org.Hs.eg.db)
+
+goSEA <- enrichGO(gene = mapped_genes_entrez$ENTREZID,
+                  OrgDb = org.Hs.eg.db,
+                  keyType = "ENTREZID",
+                  ont = "BP",
+                  pAdjustMethod = "BH",
+                  pvalueCutoff = 0.05,
+                  qvalueCutoff = 0.05)
+```
+
+# Enrichment analysis
+
+```{r Visualize GO SEA enrichment results}
+cnetplot(goSEA, colorEdge = TRUE, cex_label_gene = 0.5)
+dotplot(goSEA)
+goSEA <- pairwise_termsim(goSEA)
+treeplot(goSEA)
+```
+
+```{r}
+# import data
+significant_genes <- read_tsv('data/significant_genes.tsv') 
+```
+
+# GSEA Analysis
+
+```{r gsea_on_all}
+all_genes <- as.data.frame(read_csv('data/all_gene_processed.csv'))
+rownames(all_genes) <- all_genes$`...1`
+all_genes <- all_genes[,2:6]
+
+processed_genes_for_gse <- as.vector(all_genes$logFC)  # p value vector
+names(processed_genes_for_gse) <- as.vector(rownames(all_genes)) # gene ids
+processed_genes_for_gse <- processed_genes_for_gse[order(-processed_genes_for_gse)] # order ranked
+#processed_genes_for_gse
+
+
+ego <- gseGO(geneList     = processed_genes_for_gse,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "BP", ## Molecular Function (MF), Biological Process (BP), and Cellular Component (CC)
+              nPerm        = 1000,
+              minGSSize    = 3,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE,
+              by = "fgsea",
+              pAdjustMethod = "none")
+
+ego
+
+goplot(ego)
+
+dotplot(ego, showCategory=10, split=".sign") + facet_grid(.~.sign) + labs(title = "GSEA For Biological Processes in Alzheimer's Disease")
+```
+
+```{r}
+count_data <- read.table("data/GSE53697_RNAseq_AD.txt", header = TRUE, sep = "\t", row.names = 1) %>%
+  dplyr::select(matches("_raw$"))
+subset_count_data <- count_data[rownames(count_data) %in% as.vector(significant_genes$GeneID),]
+metadata <- read_excel('data/ad_metadata.xlsx')
+```
+
+```{r}
+sampleDist <- cor(subset_count_data, method = "spearman") 
+
+sample_conditions <- data.frame(
+  sample = colnames(subset_count_data),
+  condition = ifelse(grepl("^C", colnames(subset_count_data)), "HC", "AD"),
+  batch = c(0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1),  ## Manually adding batch information; batch effect is a bit serious as otherwise no gene will be identified as significant
+  plaque = metadata$BM9_plaque
+)
+sample_conditions
+
+heat_colors <- list(condition = c("HC" = "#01bfc5", "AD" = "salmon"))
+
+
+pheatmap(mat = sampleDist,
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    annotation_col = data.frame(Plaque = sample_conditions$plaque, row.names = sample_conditions$sample))
+```
+
+# Incorrect GSEA Analysis
+
+The below analysis does not follow the expected steps! TO AVOID.
+
+## Prepare data
+
+```{r}
+# create input vector for gene enrichment
+significant_genes_for_gse <- as.vector(significant_genes$logFC)  # p value vector
+names(significant_genes_for_gse) <- as.vector(significant_genes$GeneID) # gene ids
+significant_genes_for_gse <- significant_genes_for_gse[order(-significant_genes_for_gse)] # order ranked
+```
+
+## Run gseGO
+
+```{r}
+# run gseGO for ontology ALL
+ego_all <- gseGO(geneList   = significant_genes_for_gse,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "ALL", ## Molecular Function (MF), Biological Process (BP), and Cellular Component (CC)
+              nPerm        = 1000,
+              minGSSize    = 10,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE,
+              by = "fgsea",
+              pAdjustMethod = "none") 
+```
+
+
+```{r}
+# run gseGO for ontology MF
+ego1 <- gseGO(geneList     = significant_genes_for_gse,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "MF", ## Molecular Function (MF), Biological Process (BP), and Cellular Component (CC)
+              nPerm        = 1000,
+              minGSSize    = 10,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE,
+              by = "fgsea",
+              pAdjustMethod = "none") 
+
+## gave 0 enriched genes
+```
+
+
+```{r}
+# run gseGO for ontology CC
+ego2 <- gseGO(geneList     = significant_genes_for_gse,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "CC", ## Molecular Function (MF), Biological Process (BP), and Cellular Component (CC)
+              nPerm        = 1000,
+              minGSSize    = 10,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE,
+              by = "fgsea",
+              pAdjustMethod = "none") 
+```
+
+```{r}
+# run gseGO for ontology BP
+ego3 <- gseGO(geneList     = significant_genes_for_gse,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "BP", ## Molecular Function (MF), Biological Process (BP), and Cellular Component (CC)
+              nPerm        = 1000,
+              minGSSize    = 10,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE,
+              by = "fgsea",
+              pAdjustMethod = "none") # “holm”, “hochberg”, “hommel”, “bonferroni”, “BH”, “BY”, “fdr”, “none”
+```
+
+```{r}
+# compare the processes and components identified as signifcant between the ontologies
+#ego3$Description
+#ego2$Description
+#ego_all$Description
+
+#setdiff(ego2$Description, ego_all$Description)
+#setdiff(ego3$Description, ego_all$Description) # "cellular response to stress" disappears from list
+```
+
+## Plots
+
+```{r}
+goplot(ego3)
+```
+
+```{r}
+dotplot(ego2, showCategory=10, split=".sign") + facet_grid(.~.sign) + labs(title = "GSEA For Cellular Components in Alzheimer's Disease")
+```
+
+```{r}
+dotplot(ego3, showCategory=10, split=".sign") + facet_grid(.~.sign) + labs(title = "GSEA For Biological Processes in Alzheimer's Disease")
+```
+
+```{r}
+emapplot(pairwise_termsim(ego3), showCategory = 10)
+```
+
+```{r , fig.width=10, fig.height=20}
+## compare the different plots
+d_all <- dotplot(ego_all, showCategory=10, split=".sign") + facet_grid(.~.sign) +  theme(axis.text.y = element_text(hjust = 1, size = 7)) 
+d2 <- dotplot(ego2, showCategory=10, split=".sign") + facet_grid(.~.sign)+  theme(axis.text.y = element_text(hjust = 1, size = 7)) 
+d3 <- dotplot(ego3, showCategory=10, split=".sign") + facet_grid(.~.sign)+  theme(axis.text.y = element_text(hjust = 1, size = 7)) 
+
+ggarrange(d_all, d2, d3, 
+          labels = c("ALL", "CC", "BP"),
+          ncol = 1, nrow = 3)
+```
+
+```{r}
+ridgeplot(ego3) + labs(x = "enrichment distribution") +   theme(axis.text.y = element_text(hjust = 1, size = 7)) 
+```
+
+```{r}
+gseaplot(ego3, by = "all", title = ego3$Description[1], geneSetID = 1)
+```
+
+```{r}
+gseaplot(ego3, by = "all", title = ego3$Description[2], geneSetID = 2)
+```
+
+## GSEA on specific clusters
+
+```{r}
+all_genes <- as.data.frame(read_csv('data/all_gene_processed.csv'))
+rownames(all_genes) <- all_genes$`...1`
+all_genes <- all_genes[,2:6]
+
+voom_normalized <- read_tsv('data/voom_normalized.tsv') 
+
+gene_cluster <- read_delim('data/cluster1.txt', delim='\n', col_names = FALSE)
+gene_cluster_data <- voom_normalized[voom_normalized$GeneSymbol %in% as.vector(gene_cluster$X1),]
+genes_for_gse <- all_genes[rownames(all_genes) %in% gene_cluster_data$GeneID,]
+ 
+processed_genes_for_gse <- as.vector(genes_for_gse$logFC)  # p value vector
+names(processed_genes_for_gse) <- as.vector(rownames(genes_for_gse)) # gene ids
+processed_genes_for_gse <- processed_genes_for_gse[order(-processed_genes_for_gse)] # order ranked
+
+ego <- gseGO(geneList     = processed_genes_for_gse,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "BP", ## Molecular Function (MF), Biological Process (BP), and Cellular Component (CC)
+              nPerm        = 1000,
+              minGSSize    = 3,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE,
+              by = "fgsea",
+              pAdjustMethod = "none")
+
+goplot(ego)
+```
+
+```{r}
+all_genes <- as.data.frame(read_csv('data/all_gene_processed.csv'))
+rownames(all_genes) <- all_genes$`...1`
+all_genes <- all_genes[,2:6]
+
+voom_normalized <- read_tsv('data/voom_normalized.tsv') 
+
+gene_cluster <- read_delim('data/cluster2.txt', delim='\n', col_names = FALSE)
+gene_cluster_data <- voom_normalized[voom_normalized$GeneSymbol %in% as.vector(gene_cluster$X1),]
+genes_for_gse <- all_genes[rownames(all_genes) %in% gene_cluster_data$GeneID,]
+ 
+processed_genes_for_gse <- as.vector(genes_for_gse$logFC)  # p value vector
+names(processed_genes_for_gse) <- as.vector(rownames(genes_for_gse)) # gene ids
+processed_genes_for_gse <- processed_genes_for_gse[order(-processed_genes_for_gse)] # order ranked
+processed_genes_for_gse
+
+
+ego <- gseGO(geneList     = processed_genes_for_gse,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "BP", ## Molecular Function (MF), Biological Process (BP), and Cellular Component (CC)
+              nPerm        = 1000,
+              minGSSize    = 3,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE,
+              by = "fgsea",
+              pAdjustMethod = "none")
+
+goplot(ego)
+```
+
+
+```{r}
+all_genes <- as.data.frame(read_csv('data/all_gene_processed.csv'))
+rownames(all_genes) <- all_genes$`...1`
+all_genes <- all_genes[,2:6]
+
+voom_normalized <- read_tsv('data/voom_normalized.tsv') 
+
+gene_cluster <- read_delim('data/cluster5.txt', delim='\n', col_names = FALSE)
+gene_cluster_data <- voom_normalized[voom_normalized$GeneSymbol %in% as.vector(gene_cluster$X1),]
+genes_for_gse <- all_genes[rownames(all_genes) %in% gene_cluster_data$GeneID,]
+ 
+processed_genes_for_gse <- as.vector(genes_for_gse$logFC)  # p value vector
+names(processed_genes_for_gse) <- as.vector(rownames(genes_for_gse)) # gene ids
+processed_genes_for_gse <- processed_genes_for_gse[order(-processed_genes_for_gse)] # order ranked
+
+ego <- gseGO(geneList     = processed_genes_for_gse,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "BP", ## Molecular Function (MF), Biological Process (BP), and Cellular Component (CC)
+              nPerm        = 1000,
+              minGSSize    = 3,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE,
+              by = "fgsea",
+              pAdjustMethod = "none")
+
+goplot(ego)
+```
+
+# CytoScape 
+We will investigate protein-protein interactions (PPIs) for a given list of proteins. To do so, we will retreive PPI data from the STRING database and visualize networks in Cytoscape using the R package RCy3. We will further cluster the network to investigate whether subsets of proteins share a particular molecular function. 
+
+Requirements: Cytoscape running, with the clusterMaker app installed.
+
+```{r}
+# Confirm that Cytoscape is running
+cytoscapeVersionInfo ()
+```
+
+## Load protein list 
+
+```{r}
+proteins <- readLines("data/gene_symbols_list.txt")
+head(proteins)
+```
+
+## Initialize STRING db
+
+```{r}
+# Initialize STRINGdb object 
+string_db <- STRINGdb$new(version="12.0", 
+                          species=9606, # Homo sapiens
+                          score_threshold=400, 
+                          input_directory="")
+```
+
+## Map gene names to STRING aliases 
+
+```{r}
+# Create a dataframe with uppercase letters (to match with STRING alias mapping)
+data <- data.frame(query.term = toupper(proteins)) 
+
+# check if file with mapping to STRING aliases exists
+# and create it if it doesn't
+if (file.exists("data/mapped2STRING.csv")) {
+  
+  mapped <- read.csv("data/mapped2STRING.csv")
+  
+} else {
+  
+mapped <- string_db$map(my_data_frame = data, 
+                        my_data_frame_id_col_names = "query.term", 
+                        takeFirst=TRUE, 
+                        removeUnmappedRows=TRUE, 
+                        quiet=FALSE)
+write.csv(x = mapped, file = "data/mapped2STRING.csv", quote = FALSE, row.names = FALSE)
+
+}
+
+head(mapped)
+```
+
+```{r}
+# Check how many proteins were not mapped
+# Since some gene IDs can map to several STRING identifiers, we account for duplicates 
+length(unique(data$query.term)) - length(unique(mapped$query.term))
+```
+
+## Fetch interaction data
+
+```{r}
+# Get interactions for the mapped proteins if the file isn't already there
+
+# check if file with interaction data exists 
+# and create it if it doesn't
+if (file.exists("data/interactions.csv")) {
+  
+  interactions <- read.csv("data/interactions.csv")
+  
+} else {
+  
+interactions <- string_db$get_interactions(mapped$STRING_id)
+write.csv(x = interactions, file = "data/interactions.csv", quote = FALSE, row.names = FALSE)
+}
+
+# View the first few interactions 
+head(interactions)
+```
+
+## Create dataframe for PPI network
+
+Define nodes for the network
+
+```{r}
+# Get node columns for the Cytoscape network
+nodes <- data.frame(id = unique(c(interactions$from, interactions$to)))
+
+# Merge with the mapped protein names to include original protein names as labels
+nodes <- merge(nodes, mapped[, c("STRING_id", "query.term")], 
+               by.x = "id", by.y = "STRING_id", 
+               all.x = TRUE, 
+               all.y = TRUE)
+
+head(nodes)
+```
+
+Define edges for the network
+
+```{r}
+edges <- data.frame(source = interactions$from, target = interactions$to)
+
+# Remove directionality of edges (necessary for various clusterings later)
+# Combine and sort the columns, then get unique rows
+unique_edges <- unique(t(apply(edges, 1, function(x) sort(x))))
+
+# Convert back to a dataframe
+edges <- as.data.frame(unique_edges, stringsAsFactors = FALSE)
+
+# Rename the columns if needed
+colnames(edges) <- c("source", "target")
+
+head(edges)
+```
+
+## Make the network in Cytoscape
+
+```{r}
+# Connect to Cytoscape
+cytoscapePing()
+
+# Create a new Cytoscape network from your data
+createNetworkFromDataFrames(nodes = nodes, 
+                            edges = edges, 
+                            # title = mytitle, 
+                            collection = "My Collection")
+
+# Set node labels to the original protein names, and other visual tweaks
+setNodeLabelMapping('query.term')
+setNodeShapeDefault('ELLIPSE')
+setNodeColorDefault('#9fbcda')
+```
+
+Now we modify the network layout in the app to reduce overlap of nodes and make it overall more aesthetically pleasing. Parameters will depend on the network 
+
+```{r}
+# using force-directed layout. Higher coefficients means nodes are closer together. 
+layoutNetwork('force-directed defaultSpringCoefficient=0.000006 defaultSpringLength=1')
+```
+
+## Save and View the network 
+
+```{r}
+# Make sure network fits in the frame to be saved 
+fitContent()
+
+#save network image
+exportImage(filename = "currentnetwork.png") 
+
+# view network image
+knitr::include_graphics("currentnetwork.png") 
+```
+
+## Cluster PPI network 
+
+commands specify: restoreEdges: restores edges after clustering, showUI: displays the new network, and undirectedEdges: assumes edges are undirected
+
+### GLay clustering 
+
+Run GLay community clustering 
+
+```{r}
+# Run GLay community clustering
+RCy3::commandsRun("cluster glay restoreEdges= true showUI = true undirectedEdges = true")
+
+# reduce overlaps by making the nodes less inclined to be close to each other
+layoutNetwork('force-directed defaultSpringCoefficient=0.000006 defaultSpringLength=1')
+```
+
+Visualize network after clustering 
+
+```{r}
+# Make sure network fits in the frame to be saved 
+fitContent()
+
+#save network image
+exportImage(filename = "currentnetwork_clustered.png") 
+
+# view network image
+knitr::include_graphics("currentnetwork_clustered.png") 
+```
+
+## Save network info 
+
+```{r}
+# Get the table with clustering results 
+network_table <- getTableColumns()
+clusterinfo <- table(network_table$`__glayCluster`)
+clusterinfo
+```
+
+## Members of each big cluster 
+
+```{r}
+# Save the members of clusters with >5 nodes for subsequent analysis 
+bigclusters <- names(clusterinfo)[(table(network_table$`__glayCluster`) > 5)]
+bigclusternames <- paste0("cluster", bigclusters)
+
+# empty list of clusters to cycle through
+clusterlist <- list()
+
+for (i in 1:length(bigclusters)){
+  
+  # create given clustername
+  given_clustername <- bigclusternames[i]
+  
+  # make a list of these lists 
+  clusterlist[[i]] <- network_table$query.term[network_table$`__glayCluster` == bigclusters[i]]
+}
+
+names(clusterlist) <- bigclusternames
+```
+
+Members of each cluster
+
+```{r}
+clusterlist
+```
+
+# Enrichment analysis for each cluster (GO Biological Process)
+
+```{r}
+# Run enrichment analysis on each cluster 
+GO_BP_enrichments <- lapply(clusterlist, function(cluster) {
+  
+  enrichGO(gene = cluster,
+           OrgDb = org.Hs.eg.db,
+           keyType = "SYMBOL",
+           ont = "BP",
+           pAdjustMethod = "BH",
+           qvalueCutoff = 0.01)
+})
+```
+
+Create dotplots for results 
+
+```{r}
+for (x in 1:length(GO_BP_enrichments)){
+  
+  # pick out object with enrichments 
+  enrichresult <- GO_BP_enrichments[[x]]
+  
+  # make dotplot object 
+  p <- dotplot(object = enrichresult) + 
+    ggtitle(paste0("ORA BP for ", names(clusterlist)[x]))
+  
+  print(p)
+}
+```
+
+## Enrichment analysis for each cluster (GO Molecular Function)
+
+```{r}
+# Run enrichment analysis on each cluster 
+GO_MF_enrichments <- lapply(clusterlist, function(cluster) {
+  
+  enrichGO(gene = cluster,
+           OrgDb = org.Hs.eg.db,
+           keyType = "SYMBOL",
+           ont = "MF",
+           pAdjustMethod = "BH",
+           qvalueCutoff = 0.01)
+  
+})
+```
+
+Create dotplots for results 
+
+```{r}
+for (x in 1:length(GO_MF_enrichments)){
+  
+  # pick out object with enrichments 
+  enrichresult <- GO_MF_enrichments[[x]]
+  
+  # make dotplot object 
+  p <- dotplot(object = enrichresult) + 
+    ggtitle(paste0("ORA MF for ", names(clusterlist)[x]))
+  
+  print(p)
+}
+```
+
+## Enrichment analysis for each cluster (GO Cellular Component)
+
+```{r}
+# Run enrichment analysis on each cluster 
+GO_CC_enrichments <- lapply(clusterlist, function(cluster) {
+  
+  enrichGO(gene = cluster,
+           OrgDb = org.Hs.eg.db,
+           keyType = "SYMBOL",
+           ont = "CC",
+           pAdjustMethod = "BH",
+           qvalueCutoff = 0.01)
+})
+```
+
+Create dotplots for results 
+
+```{r}
+for (x in 1:length(GO_CC_enrichments)){
+  
+  # pick out object with enrichments 
+  enrichresult <- GO_CC_enrichments[[x]]
+  
+  # make dotplot object 
+  p <- dotplot(object = enrichresult) + 
+    ggtitle(paste0("ORA CC for ", names(clusterlist)[x]))
+  
+  print(p)
+}
+```
+
+# Random forest classification
+
+## Prepare data
+
+```{r}
+# Load and prepare the data
+data_raw <- read_tsv("data/voom_normalized.tsv")
+data <- data_raw %>%
+  distinct(GeneSymbol, .keep_all = TRUE) %>%
+  dplyr::select(-GeneID) %>%
+  filter(!is.na(GeneSymbol)) %>%
+  column_to_rownames(var = "GeneSymbol") %>%
+  mutate_all(~ ifelse(. < 0, 0, .)) %>%
+  mutate_all(as.integer)
+
+# Prepare metadata
+metadata_raw <- read_xlsx("data/ad_metadata.xlsx")
+metadata <- metadata_raw %>%
+  mutate(Index = row_number()) %>%
+  column_to_rownames(var = "Index") %>%
+  dplyr::rename(sample = ID, disease = Disease) %>%
+  mutate(individual = gsub("_raw", "", sample)) %>%
+  dplyr::select(sample, individual, disease) %>%
+  mutate(individual = factor(individual), disease = factor(disease))
+
+# Ensure the data is in a matrix form with gene symbols as rownames
+countData <- as.matrix(data)
+
+# Prepare DESeqDataSet
+dds <- DESeqDataSetFromMatrix(
+  countData = countData,
+  colData = metadata,
+  design = ~ 0 + disease
+)
+
+# Estimate size factors
+dds <- estimateSizeFactors(dds)
+
+# Estimate gene-wise dispersions
+dds <- estimateDispersionsGeneEst(dds)
+
+# Directly use the gene-wise estimates
+dispersions(dds) <- mcols(dds)$dispGeneEst
+
+normCounts <- varianceStabilizingTransformation(dds, blind = FALSE)
+```
+
+```{r}
+#Define model fitting procedure
+#NB: you will also need the packages statmod and e1071 for this analysis
+#New score function
+rfSBF$score <- function(x, y){
+sd(x) / mean(x)
+}
+#New filter function
+rfSBF$filter <- function(score, x, y){
+meanLog2CPM <- rowMeans(log2(cpm(data) + 1))
+selection <- score > quantile(score, 0.9) & meanLog2CPM > 1
+names(score) %in% names(score)[selection]
+}
+```
+
+```{r}
+#Create training set
+trainingSet <- data.frame(t(assay(normCounts)))
+#Train and validate decision tree (C5.0)
+dtControl <- sbfControl(
+  functions = rfSBF,
+  method = "loocv",
+  saveDetails = TRUE,
+  verbose = FALSE)
+
+dtModel <- sbf(
+  trainingSet,
+  metadata$disease,
+  sbfControl = dtControl)
+
+#Show model
+#summary(dtModel$fit)
+```
+
+## Performance evaluation
+
+```{r}
+#Print confusion matrix from validation
+confusionMatrix(dtModel$pred$predictions$pred, metadata$disease)
+```
+
+# Spearman correlation analysis
+
+Loading the data for the correlaton analysis
+
+```{r}
+data <- read_tsv("data/voom_normalized.tsv")
+de_results <- read_tsv("data/significant_genes.tsv")
+metadata <- read_xlsx("data/ad_metadata.xlsx")
+```
+
+Performing Spearman correlation of the 63 upregulated genes on selected clinical variables of interest and comparing the correlation between Alzheimer's disease and control  samples.
+
+```{r , fig.width=20, fig.height=10}
+# Function to create correlation data and plot
+create_correlation_plot <- function(data, metadata, gene_symbols, variable, title) {
+  correlation_data <- data %>%
+    filter(GeneSymbol %in% gene_symbols) %>%
+    pivot_longer(cols = -GeneSymbol, names_to = "ID", values_to = "value") %>%
+    right_join(metadata, by = "ID") %>%
+    group_by(GeneSymbol, Disease) %>%
+    summarise(correlation = cor(value, !!rlang::sym(variable), method = "spearman"), .groups = "drop") %>%
+    ungroup()
+
+  # Extract the order of genes based on their correlation in AD
+  ad_correlations <- correlation_data %>%
+    filter(Disease == "AD") %>%
+    arrange(desc(correlation)) %>%
+    pull(GeneSymbol)
+
+  # Ensure that all GeneSymbols are included, even those not present in AD data
+  full_gene_list <- unique(correlation_data$GeneSymbol)
+  ad_order <- unique(c(ad_correlations, full_gene_list)) # This ensures all genes are included and in order
+
+  # Set the levels of GeneSymbol according to their order in AD
+  correlation_data$GeneSymbol <- factor(correlation_data$GeneSymbol, levels = ad_order)
+
+  # Plot the heatmap with genes ordered by their correlation in AD
+  heatmap_plot <- ggplot(correlation_data, aes(x = Disease, y = GeneSymbol, fill = correlation)) +
+    geom_tile() +
+    scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(fill = "Correlation", y = "Gene (ordered by AD correlation)", x = "Disease", title = title)
+
+  return(heatmap_plot)
+}
+
+# Variables of interest
+variables_of_interest <- c("Age", "PMI", "Mean_plaque", "CDR")
+
+# Plot list
+plot_list <- list()
+
+# Loop over variables and create plots
+for (variable in variables_of_interest) {
+  plot_list[[variable]] <- create_correlation_plot(data, metadata, de_results$GeneSymbol, variable, paste("Correlation with", variable))
+}
+
+# Combine plots
+combined_plot <- wrap_plots(plot_list, nrow = 1)
+
+# Print the combined plot
+print(combined_plot)
+```
+
+# Final reflection (1/2 A4)
+
+Statistical challenges:
+I think for our project there was a few challanges that we tried to overcome. The first one was when picking a completely new dataset unfamiliar to us. Even though some of the group members had worked on RNA-seq data before, it was a challenge for me to understand all the important steps during the pre-processing and considerations when analyzing. Since my background is in plasma proteomics, I found some similarities in the dataframe and how I could analyze the data. For instance, I was not used to the idea of count data because I normally work with either normalized protein expression (NPX) or medium florecence intensity (MFI). 
+
+My largest contributions to this work was the attempt to classify Alzheimer's Disease (AD) using a leave-one-out (LOO) cross-validation (CV). In the short time limit that we had, I chose to apply a similar pipeline that was presented during the course. There was an issue with the vst() transformation funciton, which led me to perform some extra steps before I could apply the spelled out version of the function, which gave me a functional object from which I could proceed with this pipeline. In the end, the random forest classification gave an AUC of 0.41, which is worse than a random guess. There could have been several reasons behind this. On the one hand, since we may have picked the wrong data set or performed unlegitimate pre-processing, the data could have been more noisy. 
+
+The other contribution was to perform Spearman correlation analysis of the significant upregulated genes from the differential expression analysis on the AD patients and the controls. Some biological relevancies was found like the higher correlation to CDR. However, it didn't make any sense to me that the top markers would have a negative correlation with age since age is a big factor behind AD, but this could be because of the noisy data.
+
+Final reflection:
+In light of my own PhD project and what I have learnt from this course, I now feel more confortable applying these concept to my plasma proteomics pipelines and I now have more thoughts on how I could improve my current projects with methods such as canonical correlation analysis (CCA). My goal is to characterize the cardiovascular proteome and I think it will include some more multivariate analysis, therefore many of these concept I learnt during the course will be of great help.
+
+
+# Session info
+
+```{r}
+sessionInfo()
+```
