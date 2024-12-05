@@ -1,6 +1,6 @@
 ---
 title: "Analysis of RNA-seq data in Alzheimer's Disease Patients"
-author: "Divya Shridar (Group 2)"
+author: "Vaishnavi Divya Shridar (Group 2)"
 date: "29 Nov 2024"
 output:
   html_document:
@@ -22,10 +22,12 @@ packages <- c("dplyr", "DESeq2", "pheatmap", "ggplot2", "ggrepel",
               "RColorBrewer", "gridExtra", "stringr", "knitr", "prettydoc", 
               "caret", "pROC", "C50", "statmod", "e1071", "reshape", 
               "MASS", "pvclust", "randomForest", "ncvreg", "devtools", 
-              "clusterProfiler", "org.Hs.eg.db", "enrichplot", "BioStudies", "readr")
-
+              "clusterProfiler", "org.Hs.eg.db", "enrichplot", "BioStudies", "readr", "STRINGdb")
+  
 invisible(lapply(as.list(packages), require, character.only = TRUE))
 ```
+
+This preceding report summarises the statistical project completed as part of the Statistics in Bioinformatics course at the University of Örebro between 25 to 29 November 2024, as part of the The Swedish National Graduate School in Medical Bioinformatics (MedBioInfo). Feedback received during the project presentation is interspersed in blue boxes below, for a more comprehensive picture to be provided to the reviewer. The author contributions include the gene set enrichment analysis, of which a part is presented in [Gene-Disease Exploration], and additional correlation analysis that has been left out of this report for brevity. 
 
 # Data Background and Introduction
 Scheckel et al. had explored the role of neuronal ELAV (nELAVL) proteins in post-mortem Alzheimer's disease (AD) using RNA sequencing data from 9 Alzheimer's patients and 8 controls. In this data set, the sequencing data is presented as count data of the transcriptome, with 19185 genes specified. Alongside sequencing data, patient metadata detailing their age, post-mortem interval, clinical diagnosis rating, plaque values, CLIP values and sequencing bactch information were found. 
@@ -180,6 +182,7 @@ sample_conditions <- sample_conditions[!sample_conditions$sample %in% outliers, 
 ```
 
 At this stage, data points C1, C5 and C6 were removed from further analysis as they had been identified as outliers. 
+
 <div class="alert alert-info">
   <strong>Presentation Feedback!</strong> This performed PCA should not have led to outlier removal, and it would have been better to maintain all data points due to the small sample size.
 </div>
@@ -243,33 +246,44 @@ print(volcanoPlot)
 
 Gene enrichment was also performed using clusterProfiler, with the minimum gene set size as 10 and a p-value significance of 0.05. 
 
-![Thus plot shows gseGO results for biological processes in Alzheimer's Disease](results/gsea_bp_dotplot.png)
+![This plot shows gseGO results for biological processes in Alzheimer's Disease.](results/gsea_bp_dotplot.png)
 
 
 Processes and components associated with significant genes seem fairly general and non-specific to Alzheimer’s patients. However, the activated inflammatory response aligns with recent findings, with Cornell Medicine investigators recently finding that two genetic variants that confer high risk of Alzheimer's disease (AD) together trigger a harmful inflammatory response in the brain's immune cells.
 
-## Protein-Disease Exploration
-```{r}
-proteins <- readLines("data/gene_symbols_list.txt")
-head(proteins)
-```
+<div class="alert alert-info">
+  <strong>Presentation Feedback!</strong> This performed gseGO should have used entire gene set instead of those identified as significant only. The significant subset should be used when running enrichGO instead. 
+</div>
 
+## Protein-Disease Exploration
+Protein-protein interaction database STRING v11, with 19566 proteins and 2000556 interactions, was leveraged for the identification of protein-protein interactions in relation to the 63 significant genes The resultant network plot can be seen below.
+
+![This plot shows network plot produced from protein-protein interactions in the context of the 63 genes identified as significant.](results/protein_protein_analysis.png)
+For greater granularity, GLay community clustering was performed to identify clusters within the above biological network. The resultant network can be seen below. 
+
+![This plot shows network plot produced from GLay community clustering.](results/currentnetwork_clustered.png)
+Gene set enrichment performed within these clusters identified regulation of immune effector process, positive regulation of
+cytokine production and humoral immune response as key biological processes for each of the three clusters respectively. All identified processes appear to be related to immune response, in line with the results obtained from [Gene-Disease Exploration].
 
 ## Patient-Disease Exploration
-1. Item 1
-2. Item 2
-3. Item 3
-    + Item 3a
-    + Item 3b
+Spearman correlation was performed of the 63 significant genes on their age, post-mortem interval, mean plaque value and clinical diagnosis rating. The resultant correlation values were compared across the different patient conditions (AD vs control), as seen in the figure below. 
 
+![This plot shows Spearman correlation plots produced from analysis of normalised gene count informationn across different patient conditions.](correlation_plots.png)
 
+<div class="alert alert-info">
+  <strong>Presentation Feedback!</strong> This performed correlation analysis should have included significance information as well. It was hypothesised by Andreas that rerunning the correlation analysis with random simulated data would lead to the same result as presented here.
+</div>
 
 # Reflections
-## Statistical challenges related to this work; Proposed Design and Method Choice
+## Statistical challenges related to this work
+### Proposed Design and Method Choice
 The biggest issue with this work was my unfamiliarity with both the data type and analysis methods - as a background, I work in methods development for environmental metagenomic data in the interest of pandemic preparedness. Thus, while I intuitively understand the presentation of RNA-seq data, as counts per gene across the different patient reads, I was unaware of the covariates and mediators usually associated with this kind of data. As an example, it was during the presentation feedback that I learnt of the importance of normalising for the post-mortem interval. Additionally, the initially performed gene set enrichment analysis using gseGO presented during the course was run on only a subset of genes that had been identified as significant, when in fact it should have been run on the entire gene set. Once again, it was during the presentation feedback that I learnt of the different input types required across the different gene set enrichment functions, as the function enrichGO would have required only the subset of significant genes. Thus, the proposed design was clearly disadvantaged by the limited experience in this specific area. However, it really drove home the need for collaboration with individuals that are experts in their own fields. 
 
 ## Statistical challenges in my PhD project
-In the context of my own research, this 
+In the context of my own research, there has been limited statistical analysis performed thus far. The majority of the research work that I have completed in the past year have been driven by taxonomic classification and gene annotation in an exploratory manner to environmental metagenomic data for identification of bacterial strains and antimicrobial resistance genes present in our samples. This course has reminded me of the necessity of statistical evaluation when presenting and discussing results, and inspired me to search for statistical methods applied to my field, instead of purely bioinformatics tools targeted to biologists. Key concepts that I found particularly interesting were functional annotation, as it summarises biological impact that differentially expressed genes might have, and may allow for inferences to be drawn from comparing environmental and clinical metagenomic data. Further discussion with Benjamin Ulfenborg also revealed that curating custom gene ontology tools may be useful for my project. Overall, the greatest statistical challenge in my project is entirely the lack of statistics.
+
+## Acknowledgements
+I would like to take this opportunity to thank my group members Emil Johansson, Inika Prasad and Yuqi Zheng for making this entire project a wonderful experience. I'd also like to thank Benjamin Ulfenborg, Andreas Tilevik and Dirk Respilber for sharing their experience and expertise with us over the duration of this course. Additionally, I'd like to thank MedBioInfo for giving me the opportunity to attend this course.
 
 
 
